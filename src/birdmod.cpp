@@ -32,13 +32,13 @@ const BirdDef kBirds[kBirdCount] = {
      L"bird 01 select.wav", L"bird 01 flying.wav", L"bird 01 collision a1.wav"},
     {"Chuck",   "BIRD_YELLOW",      "BIRD_YELLOW_FLYING", "BIRD_YELLOW_SPECIAL",   150,  750, DashRight,   300,
      L"bird 03 select.wav", L"bird 03 flying.wav", L"special boost.wav"},
-    {"Bomb",    "BIRD_GREY",        "BIRD_GREY_FLYING",   "BIRD_GREY_3",           175, 3000, Explode,    1800,
+    {"Bomb",    "BIRD_GREY",        "BIRD_GREY_FLYING",   "BIRD_GREY_3",           175, 2500, Explode,    1800,
      L"bird 04 select.wav", L"bird 04 flying.wav", L"tnt box explodes.wav"},
     {"Blues",   "BIRD_BLUE",        "BIRD_BLUE",          "BIRD_BLUE_COLLISION",    75,  750, Split3,      250,
      L"bird 02 select.wav", L"bird 02 flying.wav", L"special group.wav"},
     {"Hal",     "BIRD_BOOMERANG",   "BIRD_BOOMERANG",     "BIRD_BOOMERANG_SPECIAL",125,  750, Boomerang,   300,
      L"bird 05 select.wav", L"bird 05 flying.wav", L"special boost.wav"},
-    {"Terence", "BIRD_BIG_BROTHER", "BIRD_BIG_BROTHER",   "BIRD_BIG_BROTHER_YELL", 300, 5000, ColumnCrush, 3000,
+    {"Terence", "BIRD_BIG_BROTHER", "BIRD_BIG_BROTHER",   "BIRD_BIG_BROTHER_YELL", 500, 5000, ColumnCrush, 3000,
      L"big_bird.wav",       L"bird 01 flying.wav", L"bird destroyed.wav"},
     {"Bubbles", "BIRD_PUFFER_1",    "BIRD_PUFFER_1",      "BIRD_PUFFER_2",         100, 1500, PuffPush,    100,
      L"Globe_Bird_Special_Activation_1.wav", L"bird 02 flying.wav", L"Globe_Bird_Special_Activation_2.wav"},
@@ -117,6 +117,11 @@ void Damage(uintptr_t z, int amount, BirdKind by) {
     soak(pvz::Zombie_HelmType, pvz::Zombie_HelmHp);
     int after = std::max(0, before - amount);
     pvz::wr<int>(z + pvz::Zombie_BodyHp, after);
+    // The game only checks for death inside its own damage routine, so a zombie left at 0
+    // health keeps walking until something else hits it. Kill it through the game's own
+    // "die with loot" routine: it removes the zombie and drops its loot, which is also what
+    // spawns the money bag / trophy when it's the last zombie of the level.
+    if (after == 0) pvz::ZombieDieWithLoot(z);
     int row = pvz::rd<int>(z + pvz::Zombie_Row);
     float x = pvz::rd<float>(z + pvz::Zombie_PosX), y = pvz::rd<float>(z + pvz::Zombie_PosY);
     Log("hit: %s -> zombie type %d row %d x %d, damage %d, body %d -> %d",

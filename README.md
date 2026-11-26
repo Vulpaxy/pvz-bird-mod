@@ -39,14 +39,27 @@ up to two at a time. Belt birds are free, like belt plants.
 |---------|-----|----------|--------------|
 | Red     | 100 | 7.5 s    | Heavy hit where he lands |
 | Chuck   | 150 | 7.5 s    | Lands, then dashes right along the row, hitting each zombie |
-| Bomb    | 175 | 30 s     | 3×3 explosion |
+| Bomb    | 175 | 25 s     | 3×3 explosion |
 | Blues   |  75 | 7.5 s    | Splits in three: your row and the rows above and below |
 | Hal     | 125 | 7.5 s    | Lands, then boomerangs left toward the house along the row |
-| Terence | 300 | 50 s     | Crushes the whole column he lands in |
+| Terence | 500 | 50 s     | Crushes the whole column he lands in |
 | Bubbles | 100 | 15 s     | Puffs up and shoves zombies in a 3×3 back about 1.5 tiles |
 | Stella  | 125 | 20 s     | Traps zombies in a 3×3 in bubbles for 5 seconds |
 
 Birds with long recharges start each level half-charged, like Cherry Bomb.
+Zombies killed by a bird are removed at once and drop coins like any other kill, and a bird
+can take the last zombie of a level.
+
+## Changes
+**v1.1**
+- Bird kills are instant: a zombie a bird brings to 0 health is removed straight away
+  instead of walking on until something else hits it.
+- Bird kills go through the game's own loot drop, so a bird can kill the last zombie
+  without the level getting stuck.
+- Balance: Terence costs 500 sun (was 300); Bomb recharges in 25 s (was 30 s).
+
+**v1.0**
+- First release: eight birds, plant select, conveyor belts, Red in early levels.
 
 ## Troubleshooting
 The mod writes a log to `%TEMP%\birdmod.log`: the level number, birds picked, and every launch,

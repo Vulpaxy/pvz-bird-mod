@@ -53,6 +53,13 @@ constexpr uint32_t Chooser_StartButton  = 0xA0;   // "Let's Rock!" GameButton*
 constexpr uint32_t Chooser_SeedsInBank  = 0xD3C;  // plants picked so far
 constexpr uint32_t Button_Disabled      = 0x22;   // bool in GameButton
 
+// Zombie::DieWithLoot (this = zombie in ecx): removes the zombie (no-loot routine at 0x544FB0,
+// which sets Zombie_Dead) and then drops its loot (0x544C20), including the end-of-level award.
+constexpr uintptr_t kZombieDieWithLoot = 0x544DA0;
+inline void ZombieDieWithLoot(uintptr_t zombie) {
+    reinterpret_cast<void(__thiscall*)(uintptr_t)>(kZombieDieWithLoot)(zombie);
+}
+
 template <class T> inline T rd(uintptr_t a) { return *reinterpret_cast<T*>(a); }
 template <class T> inline void wr(uintptr_t a, T v) { *reinterpret_cast<T*>(a) = v; }
 
