@@ -1,0 +1,5 @@
+# Built files go in GitHub releases, not the repo
+dist/
+# The compiler, if downloaded here
+toolchain/
+*.log
