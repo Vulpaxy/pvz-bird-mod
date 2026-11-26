@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "mode": "standalone",
   "games": [
-    { "slug": "custom-plants-vs-zombies", "role": "primary" },
+    { "slug": "custom-plants-vs-zombies-game-of-the-year", "role": "primary" },
     { "slug": "custom-angry-birds", "role": "companion" }
   ],
   "components": [
