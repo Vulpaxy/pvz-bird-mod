@@ -52,6 +52,21 @@ constexpr uint32_t Chooser_X            = 0x40, Chooser_Y = 0x44;   // widget po
 constexpr uint32_t Chooser_StartButton  = 0xA0;   // "Let's Rock!" GameButton*
 constexpr uint32_t Chooser_SeedsInBank  = 0xD3C;  // plants picked so far
 constexpr uint32_t Button_Disabled      = 0x22;   // bool in GameButton
+constexpr uint32_t Button_X = 0x10, Button_Y = 0x14, Button_W = 0x18, Button_H = 0x1C;
+
+// Almanac. It isn't a LawnApp field: the widget manager (LawnApp+0x320) points at it from
+// its modal/focus fields while it's open, and it is recognised by its vtable.
+constexpr uint32_t App_WidgetManager    = 0x320;
+constexpr uint32_t WidgetMgr_Refs[]     = {0xA0, 0xA8, 0xAC};
+constexpr uint32_t WidgetMgr_Focus      = 0xA0;   // focused widget
+constexpr uint32_t WidgetMgr_BaseModal  = 0xAC;   // lowest open modal dialog (pause menu, Imitater...)
+constexpr uint32_t Widget_X = 0x40, Widget_Y = 0x44, Widget_W = 0x48, Widget_H = 0x4C;
+constexpr uintptr_t kBoardVtbl = 0x6ECC60, kChooserVtbl = 0x6F9180;
+constexpr uintptr_t kAlmanacVtbl        = 0x6EB4F8;
+constexpr uint32_t Almanac_Close        = 0x194;  // GameButton*, (676,567) 89x26
+constexpr uint32_t Almanac_Index        = 0x198;  // GameButton*, (32,567) 164x26
+constexpr uint32_t Almanac_ViewPlants   = 0x19C;  // GameButton*, enabled only on the index page
+constexpr uint32_t Almanac_ViewZombies  = 0x1A0;
 
 // Zombie::DieWithLoot (this = zombie in ecx): removes the zombie (no-loot routine at 0x544FB0,
 // which sets Zombie_Dead) and then drops its loot (0x544C20), including the end-of-level award.

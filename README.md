@@ -31,6 +31,9 @@ AngryBirdsFolder=D:\Games\Angry Birds
 
 **Early levels** (1-1 to 1-9, except 1-5) have no plant select, so Red is added to the seed bar automatically.
 
+**Bird Almanac:** open the Almanac and click **View Birds** to see every bird's cost, recharge,
+damage, area and a short description.
+
 **Conveyor levels** (except wall-nut bowling): about one in four new packets on the belt is a bird,
 up to two at a time. Belt birds are free, like belt plants.
 
@@ -51,6 +54,14 @@ Zombies killed by a bird are removed at once and drop coins like any other kill,
 can take the last zombie of a level.
 
 ## Changes
+**v1.2**
+- Bird Almanac: a View Birds panel on the Almanac's index page opens a Birds page with
+  each bird's stats and a description.
+- Bird buttons keep working after switching between windowed and full screen.
+- Pop-ups (pause menu, Imitater picker and others) now cover the birds like they cover
+  plant cards, and birds can't be clicked through them.
+- The bird panel no longer draws over the Almanac when it's opened from plant select.
+
 **v1.1**
 - Bird kills are instant: a zombie a bird brings to 0 health is removed straight away
   instead of walking on until something else hits it.

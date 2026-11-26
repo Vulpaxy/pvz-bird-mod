@@ -79,6 +79,7 @@ struct State {
 } S;
 
 void Log(const char* fmt, ...);
+void RehookWindowMaybe();
 void SyncChooser();
 uintptr_t Bank();
 int BirdCount();
@@ -710,6 +711,198 @@ void DrawOverlay(HDC dc) {
     DrawEffects(dc);
 }
 
+// ---------- bird almanac ----------
+// Adds a "View Birds" panel to PvZ's Almanac index page and a Birds page drawn over the
+// Almanac. All text here is written for this mod; stats come from kBirds.
+struct AlmanacText { const char* tagline; const char* area; const char* blurb; };
+const AlmanacText kAlmanac[kBirdCount] = {
+    {"Hits hard where he lands.", "One spot in one lane.",
+     "Red has exactly one plan, and it's landing on zombies. He'd explain it, but he's already in the air."},
+    {"Lands, then races down the lane.", "Everything to his right in that lane.",
+     "Chuck has never once waited for the slingshot to finish stretching. Point him at a lane and stand back."},
+    {"Explodes on landing.", "3x3 squares.",
+     "Bomb is calm and polite right up until he touches the ground. The neighbours have asked him to stop practising in the driveway."},
+    {"Splits into three.", "His lane and the lanes above and below.",
+     "Three small birds for the price of one. They argue the whole way across the lawn and still land in formation."},
+    {"Boomerangs back toward the house.", "His lane, from where he lands back to the house.",
+     "Hal flies out, changes his mind, and comes back the other way. Zombies he passes on the return trip rarely see it coming."},
+    {"Flattens a whole column.", "One column, every lane.",
+     "Terence doesn't fly so much as get thrown. Whatever is under him when he comes down stops being a problem."},
+    {"Puffs up and shoves zombies back.", "3x3 squares.",
+     "Bubbles is small until he isn't. Zombies nearby get a light bruise and a long walk back to where they were."},
+    {"Traps zombies in bubbles.", "3x3 squares, for 5 seconds.",
+     "Stella seals zombies in bubbles for a few seconds. They can't take a step until it pops, which buys your plants some quiet."},
+};
+
+struct AlmanacState { bool birdsPage = false; int selected = 0; int lastIndex = -1; } A;
+const RECT kViewBirdsPanel{250, 432, 550, 556}, kViewBirdsButton{322, 504, 478, 546};
+const RECT kBirdsIndexButton{32, 567, 196, 593}, kAlmanacClose{676, 567, 765, 593};
+
+bool Readable(uintptr_t p) {
+    MEMORY_BASIC_INFORMATION mbi;
+    return p && VirtualQuery(reinterpret_cast<void*>(p), &mbi, sizeof mbi) && mbi.State == MEM_COMMIT &&
+           !(mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD));
+}
+uintptr_t FindAlmanac() {
+    uintptr_t app = pvz::App();
+    uintptr_t wm = app ? pvz::rd<uintptr_t>(app + pvz::App_WidgetManager) : 0;
+    if (!Readable(wm)) return 0;
+    for (uint32_t off : pvz::WidgetMgr_Refs) {
+        uintptr_t w = pvz::rd<uintptr_t>(wm + off);
+        if (Readable(w) && pvz::rd<uintptr_t>(w) == pvz::kAlmanacVtbl) return w;
+    }
+    return 0;
+}
+// The game turns View Plants off on the Plants and Zombies pages.
+bool AlmanacOnIndex(uintptr_t alm) {
+    uintptr_t b = pvz::rd<uintptr_t>(alm + pvz::Almanac_ViewPlants);
+    bool index = Readable(b) && !pvz::rd<uint8_t>(b + pvz::Button_Disabled);
+    if (int(index) != A.lastIndex) { A.lastIndex = index; Log("almanac: %s", index ? "index page" : "plants/zombies page"); }
+    return index;
+}
+RECT BirdsPagePacket(int bird) {
+    int x = 40 + (bird % 4) * 58, y = 120 + (bird / 4) * 80;
+    return {x, y, x + pvz::PacketW, y + pvz::PacketH};
+}
+
+void DrawPanelBox(HDC dc, RECT r, COLORREF fill, COLORREF edge) {
+    HBRUSH f = CreateSolidBrush(fill), e = CreateSolidBrush(edge);
+    FillRect(dc, &r, f);
+    for (int i = 0; i < 3; ++i) { RECT b{r.left + i, r.top + i, r.right - i, r.bottom - i}; FrameRect(dc, &b, e); }
+    DeleteObject(f); DeleteObject(e);
+}
+void DrawLabel(HDC dc, RECT r, const char* text, int size, COLORREF color, UINT fmt = DT_CENTER | DT_SINGLELINE | DT_VCENTER) {
+    HFONT font = CreateFontA(size, 0, 0, 0, FW_HEAVY, 0, 0, 0, ANSI_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, "Arial");
+    HGDIOBJ of = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT); SetTextColor(dc, color);
+    DrawTextA(dc, text, -1, &r, fmt);
+    SelectObject(dc, of); DeleteObject(font);
+}
+
+void DrawViewBirdsPanel(HDC dc) {
+    DrawPanelBox(dc, kViewBirdsPanel, RGB(70, 120, 170), RGB(30, 60, 100));
+    RECT pic{kViewBirdsPanel.left + 110, kViewBirdsPanel.top + 10, kViewBirdsPanel.right - 110, kViewBirdsPanel.top + 66};
+    BlitFit(dc, assets::Get(kBirds[Red].idle), pic);
+    DrawPanelBox(dc, kViewBirdsButton, RGB(120, 70, 30), RGB(60, 30, 10));
+    DrawLabel(dc, kViewBirdsButton, "View Birds", 18, RGB(240, 200, 80));
+}
+
+void DrawBirdsPage(HDC dc) {
+    // Parchment over the whole Almanac, leaving the game's Close button showing.
+    HBRUSH paper = CreateSolidBrush(RGB(244, 214, 160));
+    RECT parts[] = {{0, 0, 800, kAlmanacClose.top}, {0, kAlmanacClose.top, kAlmanacClose.left, 600},
+                    {kAlmanacClose.right, kAlmanacClose.top, 800, 600}, {kAlmanacClose.left, kAlmanacClose.bottom, kAlmanacClose.right, 600}};
+    for (RECT& r : parts) FillRect(dc, &r, paper);
+    DeleteObject(paper);
+
+    RECT title{180, 18, 620, 70};
+    DrawPanelBox(dc, title, RGB(140, 150, 160), RGB(70, 75, 85));
+    DrawLabel(dc, title, "Bird Almanac", 30, RGB(255, 255, 255));
+
+    for (int i = 0; i < kBirdCount; ++i) {
+        RECT r = BirdsPagePacket(i);
+        DrawBirdPacket(dc, r, i, 0, 0);
+        if (i == A.selected) {
+            HBRUSH hl = CreateSolidBrush(RGB(255, 230, 60));
+            for (int k = 1; k <= 3; ++k) { RECT b{r.left - k, r.top - k, r.right + k, r.bottom + k}; FrameRect(dc, &b, hl); }
+            DeleteObject(hl);
+        }
+    }
+
+    const BirdDef& d = kBirds[A.selected];
+    const AlmanacText& t = kAlmanac[A.selected];
+    RECT card{290, 96, 770, 550};
+    DrawPanelBox(dc, card, RGB(60, 45, 30), RGB(30, 20, 10));
+    RECT pic{310, 116, 470, 276};
+    DrawPanelBox(dc, pic, RGB(150, 200, 230), RGB(80, 120, 150));
+    RECT picIn{pic.left + 12, pic.top + 12, pic.right - 12, pic.bottom - 12};
+    BlitFit(dc, assets::Get(d.idle), picIn);
+
+    RECT name{490, 116, 760, 150};
+    DrawLabel(dc, name, d.name, 28, RGB(240, 200, 80), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    RECT tag{490, 152, 760, 190};
+    DrawLabel(dc, tag, t.tagline, 15, RGB(255, 255, 255), DT_LEFT | DT_WORDBREAK);
+
+    char cost[40], recharge[40], damage[48], area[96];
+    wsprintfA(cost, "Cost: %d sun", d.cost);
+    wsprintfA(recharge, "Recharge: %d.%d seconds", d.rechargeTicks / 100, (d.rechargeTicks / 10) % 10);
+    switch (d.effect) {
+    case BubbleTrap: lstrcpyA(damage, "Damage: none"); break;
+    case PuffPush:   wsprintfA(damage, "Damage: %d, plus a shove", d.damage); break;
+    case Split3:     wsprintfA(damage, "Damage: %d per bird", d.damage); break;
+    case DashRight: case Boomerang: wsprintfA(damage, "Damage: %d to each zombie", d.damage); break;
+    default:         wsprintfA(damage, "Damage: %d", d.damage); break;
+    }
+    wsprintfA(area, "Area: %s", t.area);
+    const char* stats[] = {cost, recharge, damage, area};
+    for (int i = 0; i < 4; ++i) {
+        RECT r{490, 200 + i * 22, 760, 222 + i * 22};
+        DrawLabel(dc, r, stats[i], 14, RGB(230, 220, 190), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+    RECT blurb{310, 300, 750, 530};
+    DrawLabel(dc, blurb, t.blurb, 17, RGB(255, 245, 225), DT_LEFT | DT_WORDBREAK);
+
+    DrawPanelBox(dc, kBirdsIndexButton, RGB(120, 70, 30), RGB(60, 30, 10));
+    DrawLabel(dc, kBirdsIndexButton, "Almanac Index", 15, RGB(240, 200, 80));
+}
+
+void DrawAlmanac(HDC dc, uintptr_t alm) {
+    if (A.birdsPage) DrawBirdsPage(dc);
+    else if (AlmanacOnIndex(alm)) DrawViewBirdsPanel(dc);
+}
+
+bool HandleAlmanacMouse(uintptr_t alm, UINT msg, POINT p) {
+    if (!A.birdsPage) {
+        if (!AlmanacOnIndex(alm) || !PtInRect(&kViewBirdsPanel, p)) return false;
+        if (msg == WM_LBUTTONDOWN && PtInRect(&kViewBirdsButton, p)) {
+            A.birdsPage = true;
+            Log("almanac: birds page");
+        }
+        return msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP;
+    }
+    if (PtInRect(&kAlmanacClose, p)) return false;        // the game's own Close button
+    if (msg == WM_LBUTTONDOWN) {
+        for (int i = 0; i < kBirdCount; ++i) {
+            RECT r = BirdsPagePacket(i);
+            if (PtInRect(&r, p)) { A.selected = i; assets::Snd(kBirds[i].selectSnd).Play(); }
+        }
+        if (PtInRect(&kBirdsIndexButton, p)) A.birdsPage = false;
+    }
+    return true;   // keep the Almanac underneath from reacting while the Birds page is up
+}
+
+// ---------- pop-ups over plant select / the level ----------
+// The mod draws after the game's whole frame, so without this the birds would sit on top of
+// the pause menu, the Imitater picker and other pop-ups. Each pop-up the widget manager
+// reports is left unpainted, so it covers the birds the way it covers the plant cards,
+// and bird input is ignored while one is open (the game ignores clicks outside it too).
+int OpenPopups(RECT out[2]) {
+    uintptr_t app = pvz::App();
+    uintptr_t wm = app ? pvz::rd<uintptr_t>(app + pvz::App_WidgetManager) : 0;
+    if (!Readable(wm)) return 0;
+    int n = 0;
+    for (uint32_t off : {pvz::WidgetMgr_BaseModal, pvz::WidgetMgr_Focus}) {
+        uintptr_t w = pvz::rd<uintptr_t>(wm + off);
+        if (!Readable(w)) continue;
+        uintptr_t vt = pvz::rd<uintptr_t>(w);
+        if (vt == pvz::kBoardVtbl || vt == pvz::kChooserVtbl || vt == pvz::kAlmanacVtbl) continue;
+        if (off == pvz::WidgetMgr_Focus && n && w == pvz::rd<uintptr_t>(wm + pvz::WidgetMgr_BaseModal)) continue;
+        int x = pvz::rd<int>(w + pvz::Widget_X), y = pvz::rd<int>(w + pvz::Widget_Y);
+        int wd = pvz::rd<int>(w + pvz::Widget_W), ht = pvz::rd<int>(w + pvz::Widget_H);
+        if (wd <= 0 || ht <= 0 || wd > 2000 || ht > 2000) continue;
+        if (off == pvz::WidgetMgr_Focus && !n) continue;   // a focused widget alone isn't a pop-up
+        out[n++] = {x, y, x + wd, y + ht};
+    }
+    static RECT last{};
+    RECT now = n ? out[0] : RECT{};
+    if (memcmp(&now, &last, sizeof now)) {
+        last = now;
+        if (n) Log("pop-up open at (%d,%d) %dx%d: birds drawn around it", now.left, now.top, now.right - now.left, now.bottom - now.top);
+        else Log("pop-up closed");
+    }
+    return n;
+}
+
 // ---------- debug log (%TEMP%\birdmod.log) ----------
 struct Counters { long blt, bltPrimary, bltFast, flip, renders, getDcFail, noBoard; } C;
 void Log(const char* fmt, ...) {
@@ -750,10 +943,22 @@ void RenderInto(void* surf) {
     g_inHook = true;
     Update();
     LogStatsMaybe();
-    if (S.board) {
+    RehookWindowMaybe();   // full-screen toggles replace the game window
+    // While the Almanac is open (main menu or plant select) only Almanac pages are drawn.
+    uintptr_t alm = FindAlmanac();
+    if (!alm) A.birdsPage = false;
+    if (S.board || alm) {
         HDC dc;
         if (SUCCEEDED((VCall<HRESULT, HDC*>(surf, kGetDC, &dc)))) {
-            DrawOverlay(dc); VCall<HRESULT, HDC>(surf, kReleaseDC, dc); ++C.renders;
+            if (alm) DrawAlmanac(dc, alm);
+            else {
+                RECT popups[2];
+                int n = OpenPopups(popups);
+                for (int i = 0; i < n; ++i) ExcludeClipRect(dc, popups[i].left, popups[i].top, popups[i].right, popups[i].bottom);
+                DrawOverlay(dc);
+                SelectClipRgn(dc, nullptr);
+            }
+            VCall<HRESULT, HDC>(surf, kReleaseDC, dc); ++C.renders;
         } else ++C.getDcFail;
     } else ++C.noBoard;
     g_inHook = false;
@@ -903,7 +1108,9 @@ bool HandleLevelMouse(UINT msg, POINT p) {
 }
 
 bool HandleMouse(UINT msg, int x, int y) {
+    if (uintptr_t alm = FindAlmanac()) return HandleAlmanacMouse(alm, msg, POINT{x, y});
     if (!S.board) return false;
+    { RECT popups[2]; if (OpenPopups(popups)) { S.dragging = false; return false; } }   // a pop-up has the input
     uintptr_t bank = Bank();
     if (!bank || !pvz::rd<uint8_t>(bank + pvz::Bank_Visible)) return false;
     POINT p{x, y};
@@ -923,13 +1130,36 @@ LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
             return 0;
         }
     }
-    return CallWindowProcW(g_origProc, h, msg, w, l);
+    // Each hooked window keeps its own original procedure (the game may make a new window).
+    WNDPROC orig = reinterpret_cast<WNDPROC>(GetPropW(h, L"birdmod_orig"));
+    if (msg == WM_NCDESTROY) RemovePropW(h, L"birdmod_orig");
+    return CallWindowProcW(orig ? orig : g_origProc, h, msg, w, l);
 }
 
 BOOL CALLBACK FindGameWindow(HWND h, LPARAM out) {
     DWORD pid; GetWindowThreadProcessId(h, &pid);
     if (pid == GetCurrentProcessId() && IsWindowVisible(h) && !GetWindow(h, GW_OWNER)) { *(HWND*)out = h; return FALSE; }
     return TRUE;
+}
+
+// Hooks the game window's mouse input. Switching between windowed and full screen makes PvZ
+// destroy its window and create a new one, so this runs again every half second (from the
+// frame hook, on the game's own thread) and hooks whichever window is current.
+void HookGameWindow(HWND wnd) {
+    if (!wnd || GetWindowLongPtrW(wnd, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(&WndProc)) return;
+    WNDPROC orig = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WndProc)));
+    SetPropW(wnd, L"birdmod_orig", reinterpret_cast<HANDLE>(orig));
+    if (!g_origProc) g_origProc = orig;
+    Log("mouse hooked on window %08x", unsigned(uintptr_t(wnd)));
+}
+void RehookWindowMaybe() {
+    static DWORD last;
+    DWORD now = GetTickCount();
+    if (now - last < 500) return;
+    last = now;
+    HWND wnd = nullptr;
+    EnumWindows(FindGameWindow, reinterpret_cast<LPARAM>(&wnd));
+    HookGameWindow(wnd);
 }
 
 void Fail(const std::wstring& msg) { MessageBoxW(nullptr, msg.c_str(), L"PvZ bird mod", MB_ICONWARNING); }
@@ -951,7 +1181,7 @@ DWORD WINAPI Init(LPVOID) {
     if (!wnd) { Fail(L"Could not find the game window."); return 0; }
     { char cls[64], title[64]; GetClassNameA(wnd, cls, 64); GetWindowTextA(wnd, title, 64); Log("window %08x class=%s title=%s", (unsigned)(uintptr_t)wnd, cls, title); }
     if (!InstallDDrawHooks()) { Fail(L"Could not hook DirectDraw."); return 0; }
-    g_origProc = (WNDPROC)SetWindowLongPtrW(wnd, GWLP_WNDPROC, (LONG_PTR)WndProc);
+    HookGameWindow(wnd);
     return 0;
 }
 
