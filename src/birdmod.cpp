@@ -755,10 +755,10 @@ uintptr_t FindAlmanac() {
     }
     return 0;
 }
-// The game turns View Plants off on the Plants and Zombies pages.
+// The game hides View Plants on the Plants and Zombies pages (AlmanacDialog::SetPage, 0x403c29).
 bool AlmanacOnIndex(uintptr_t alm) {
     uintptr_t b = pvz::rd<uintptr_t>(alm + pvz::Almanac_ViewPlants);
-    bool index = Readable(b) && !pvz::rd<uint8_t>(b + pvz::Button_Disabled);
+    bool index = Readable(b) && !pvz::rd<uint8_t>(b + pvz::Almanac_ButtonHidden);
     if (int(index) != A.lastIndex) { A.lastIndex = index; Log("almanac: %s", index ? "index page" : "plants/zombies page"); }
     return index;
 }

@@ -76,6 +76,7 @@ constexpr uint32_t Almanac_Close        = 0x194;  // GameButton*, (676,567) 89x2
 constexpr uint32_t Almanac_Index        = 0x198;  // GameButton*, (32,567) 164x26
 constexpr uint32_t Almanac_ViewPlants   = 0x19C;  // GameButton*, enabled only on the index page
 constexpr uint32_t Almanac_ViewZombies  = 0x1A0;
+constexpr uint32_t Almanac_ButtonHidden = 0x105;  // bool in the Almanac's buttons: 1 = not drawn, not clickable
 
 // Zombie::DieWithLoot (this = zombie in ecx): removes the zombie (no-loot routine at 0x544FB0,
 // which sets Zombie_Dead) and then drops its loot (0x544C20), including the end-of-level award.
