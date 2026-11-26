@@ -66,6 +66,9 @@ constexpr uint32_t App_WidgetManager    = 0x320;
 constexpr uint32_t WidgetMgr_Refs[]     = {0xA0, 0xA8, 0xAC};
 constexpr uint32_t WidgetMgr_Focus      = 0xA0;   // focused widget
 constexpr uint32_t WidgetMgr_BaseModal  = 0xAC;   // lowest open modal dialog (pause menu, Imitater...)
+// Last mouse position in game (800x600) coordinates, after the game's own full-screen remap.
+// The mod only trusts it once it moves in a straight line with the real cursor.
+constexpr uint32_t WidgetMgr_LastMouseX = 0xE0, WidgetMgr_LastMouseY = 0xE4;
 constexpr uint32_t Widget_X = 0x40, Widget_Y = 0x44, Widget_W = 0x48, Widget_H = 0x4C;
 constexpr uintptr_t kBoardVtbl = 0x6ECC60, kChooserVtbl = 0x6F9180;
 constexpr uintptr_t kAlmanacVtbl        = 0x6EB4F8;
@@ -80,6 +83,11 @@ constexpr uintptr_t kZombieDieWithLoot = 0x544DA0;
 inline void ZombieDieWithLoot(uintptr_t zombie) {
     reinterpret_cast<void(__thiscall*)(uintptr_t)>(kZombieDieWithLoot)(zombie);
 }
+
+// SeedChooserScreen's constructor: "if Adventure and the player has finished Adventure before,
+// CrazyDavePickSeeds(this)" (0x492690, which locks 3 random plants into the bank). The jle at
+// this address skips the call when the player hasn't finished Adventure; jmp skips it always.
+constexpr uintptr_t kDavePicksJump = 0x49263B;   // 7E 06 (jle +6) -> EB 06 (jmp +6)
 
 template <class T> inline T rd(uintptr_t a) { return *reinterpret_cast<T*>(a); }
 template <class T> inline void wr(uintptr_t a, T v) { *reinterpret_cast<T*>(a) = v; }

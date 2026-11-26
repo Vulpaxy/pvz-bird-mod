@@ -59,6 +59,16 @@ Zombies killed by a bird are removed at once and drop coins like any other kill,
 can take the last zombie of a level.
 
 ## Changes
+**v1.3.2**
+- Crazy Dave no longer picks 3 plants for you on later runs through Adventure: every seed slot
+  is yours to fill with plants and birds.
+
+**v1.3.1**
+- The slingshot works in full screen. On a widescreen monitor PvZ keeps its 4:3 picture with
+  black bars at the sides, and the mod used to read the mouse as if the picture filled the whole
+  screen, so grabbing the bird missed. The mod now learns where the picture really is from the
+  game's own mouse position, and draws the slingshot into the game's picture before it's stretched.
+
 **v1.3**
 - A PvZ x Angry Birds logo: the "Angry Birds" title (cut at runtime from your own Angry Birds
   splash screen) with Red perched on it sits under the Plants vs. Zombies logo on the title

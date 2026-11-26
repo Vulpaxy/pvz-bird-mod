@@ -81,6 +81,7 @@ struct State {
 
 void Log(const char* fmt, ...);
 void RehookWindowMaybe();
+void LearnMouseMap();
 void SyncChooser();
 uintptr_t Bank();
 int BirdCount();
@@ -999,6 +1000,7 @@ void RenderInto(void* surf) {
     Update();
     LogStatsMaybe();
     RehookWindowMaybe();   // full-screen toggles replace the game window
+    LearnMouseMap();
     // While the Almanac is open (main menu or plant select) only Almanac pages are drawn.
     uintptr_t alm = FindAlmanac();
     if (!alm) A.birdsPage = false;
@@ -1026,15 +1028,49 @@ void RenderInto(void* surf) {
     g_inHook = false;
 }
 
+enum { kGetSurfaceDesc = 22 };
+bool SurfaceSize(void* s, int& w, int& h) {
+    w = h = 0;
+    for (DWORD size : {DWORD(sizeof(DDSURFACEDESC2)), DWORD(sizeof(DDSURFACEDESC))}) {
+        DDSURFACEDESC2 d{}; d.dwSize = size;   // v1 surfaces want the smaller one; width/height sit at the same place
+        if (SUCCEEDED((VCall<HRESULT, void*>(s, kGetSurfaceDesc, &d)))) { w = int(d.dwWidth); h = int(d.dwHeight); return true; }
+    }
+    return false;
+}
+bool IsScreenImage(void* s) { int w, h; return s && SurfaceSize(s, w, h) && w == 800 && h == 600; }
+
+// The overlay is drawn in the game's 800x600 coordinates, so it goes into the game's 800x600
+// picture just before that picture is shown. In a window that is the copy onto the screen; in
+// full screen the game may first stretch it into a bigger picture (with black bars), and the
+// overlay belongs in the 800x600 one, not the stretched one.
+DWORD g_lastScreenRender;
+void PresentToScreen(void* src, LPRECT dst) {
+    ++C.bltPrimary;
+    int sw = 0, sh = 0; SurfaceSize(src, sw, sh);
+    static int lastW = -1, lastH = -1; static RECT lastDst{-1, -1, -1, -1};
+    RECT d = dst ? *dst : RECT{};
+    if (sw != lastW || sh != lastH || !EqualRect(&d, &lastDst)) {
+        lastW = sw; lastH = sh; lastDst = d;
+        Log("picture %dx%d shown at %d,%d-%d,%d on screen", sw, sh, int(d.left), int(d.top), int(d.right), int(d.bottom));
+    }
+    if ((sw == 800 && sh == 600) || GetTickCount() - g_lastScreenRender > 250) RenderInto(src);
+}
+void StretchFromScreenImage(void* self, void* src) {
+    if (!IsScreenImage(src) || IsScreenImage(self) || IsPrimary(self)) return;
+    g_lastScreenRender = GetTickCount();
+    RenderInto(src);
+}
+
 HRESULT WINAPI HookBlt(void* self, LPRECT dst, void* src, LPRECT srcRect, DWORD flags, LPDDBLTFX fx) {
     ++C.blt;
-    if (src && IsPrimary(self)) { ++C.bltPrimary; RenderInto(src); }
+    if (src && IsPrimary(self)) PresentToScreen(src, dst);
+    else if (src) StretchFromScreenImage(self, src);
     using F = HRESULT(WINAPI*)(void*, LPRECT, void*, LPRECT, DWORD, LPDDBLTFX);
     return reinterpret_cast<F>(HooksFor(self).blt)(self, dst, src, srcRect, flags, fx);
 }
 HRESULT WINAPI HookBltFast(void* self, DWORD x, DWORD y, void* src, LPRECT srcRect, DWORD flags) {
     ++C.bltFast;
-    if (src && IsPrimary(self)) { ++C.bltPrimary; RenderInto(src); }
+    if (src && IsPrimary(self)) PresentToScreen(src, nullptr);
     using F = HRESULT(WINAPI*)(void*, DWORD, DWORD, void*, LPRECT, DWORD);
     return reinterpret_cast<F>(HooksFor(self).bltFast)(self, x, y, src, srcRect, flags);
 }
@@ -1093,6 +1129,74 @@ bool InstallDDrawHooks() {
 
 // ---------- input ----------
 WNDPROC g_origProc;
+HWND g_gameWnd;
+
+// Window pixels -> the game's 800x600 coordinates. In full screen on a widescreen monitor
+// PvZ keeps its 4:3 picture and adds black bars at the sides, so the window is not simply
+// 800x600 stretched. The mod learns the real mapping by comparing where the cursor is in the
+// window with where the game itself says the mouse is (its widget manager's last mouse
+// position), one axis at a time; until it has, it assumes a centred 4:3 picture.
+struct AxisFit {
+    bool have = false, solved = false, learned = false;
+    int r0 = 0, g0 = 0, agree = 0, miss = 0;
+    float s = 1, o = 0;
+    void Restart(int r, int g) { *this = AxisFit{}; have = true; r0 = r; g0 = g; }
+    void Add(int r, int g) {
+        if (!have) { Restart(r, g); return; }
+        if (solved) {
+            if (std::fabs(s * r + o - g) <= 3) { miss = 0; if (++agree >= 3) learned = true; }
+            else if (++miss >= 3) Restart(r, g);
+            return;
+        }
+        if (std::abs(r - r0) < 40) { if (std::abs(r - r0) < 3 && std::abs(g - g0) > 5) Restart(r, g); return; }
+        float ns = float(g - g0) / float(r - r0);
+        if (ns < 0.2f || ns > 5.f) { Restart(r, g); return; }
+        s = ns; o = g0 - ns * r0; solved = true;
+    }
+};
+struct MouseMap { RECT rc{}; AxisFit x, y; bool loggedX = false, loggedY = false; } M;
+
+void MouseMapFor(const RECT& rc) {
+    if (EqualRect(&rc, &M.rc)) return;
+    M = MouseMap{}; M.rc = rc;
+    float s = std::min(rc.right / 800.f, rc.bottom / 600.f);
+    Log("game window is %dx%d: picture assumed at %d,%d size %dx%d until the game's own mouse confirms it",
+        int(rc.right), int(rc.bottom), int((rc.right - 800 * s) / 2), int((rc.bottom - 600 * s) / 2), int(800 * s), int(600 * s));
+}
+
+POINT ToGame(HWND h, int x, int y) {
+    RECT rc; GetClientRect(h, &rc);
+    if (rc.right <= 0 || rc.bottom <= 0) return {x, y};
+    MouseMapFor(rc);
+    float s = std::min(rc.right / 800.f, rc.bottom / 600.f);
+    float gx = (x - (rc.right - 800 * s) / 2) / s, gy = (y - (rc.bottom - 600 * s) / 2) / s;
+    if (M.x.learned) gx = M.x.s * x + M.x.o;
+    if (M.y.learned) gy = M.y.s * y + M.y.o;
+    return {LONG(std::lround(gx)), LONG(std::lround(gy))};
+}
+
+// Runs every frame on the game's thread. Only samples while the cursor rests, so the game has
+// already seen the same position.
+void LearnMouseMap() {
+    HWND h = g_gameWnd;
+    if (!h || GetForegroundWindow() != h) return;
+    POINT c; if (!GetCursorPos(&c) || !ScreenToClient(h, &c)) return;
+    RECT rc; GetClientRect(h, &rc);
+    if (rc.right <= 0 || rc.bottom <= 0 || !PtInRect(&rc, c)) return;
+    MouseMapFor(rc);
+    static POINT prev{-1, -1}; static int still;
+    if (c.x != prev.x || c.y != prev.y) { prev = c; still = 0; return; }
+    if (++still < 3) return;
+    uintptr_t app = pvz::App();
+    uintptr_t wm = app ? pvz::rd<uintptr_t>(app + pvz::App_WidgetManager) : 0;
+    if (!wm) return;
+    int gx = pvz::rd<int>(wm + pvz::WidgetMgr_LastMouseX), gy = pvz::rd<int>(wm + pvz::WidgetMgr_LastMouseY);
+    if (gx < 0 || gx >= 800 || gy < 0 || gy >= 600) return;
+    M.x.Add(c.x, gx); M.y.Add(c.y, gy);
+    if (M.x.learned && !M.loggedX) { M.loggedX = true; Log("mouse x: game = %.3f * window + %.1f", M.x.s, M.x.o); }
+    if (M.y.learned && !M.loggedY) { M.loggedY = true; Log("mouse y: game = %.3f * window + %.1f", M.y.s, M.y.o);
+        melty_test::Report("mouse-mapped", true); }
+}
 
 bool HandleChooserMouse(uintptr_t c, UINT msg, POINT p) {
     POINT o = ChooserOrigin(c);
@@ -1182,11 +1286,14 @@ bool HandleMouse(UINT msg, int x, int y) {
 }
 
 LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
-    if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
-        RECT rc; GetClientRect(h, &rc);
-        int x = short(LOWORD(l)), y = short(HIWORD(l));
-        if (rc.right > 0 && rc.bottom > 0) { x = x * 800 / rc.right; y = y * 600 / rc.bottom; }
-        if (HandleMouse(msg, x, y)) {
+    if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST && msg != WM_MOUSEWHEEL && msg != WM_MOUSEHWHEEL) {
+        POINT p = ToGame(h, short(LOWORD(l)), short(HIWORD(l)));
+        if (HandleMouse(msg, p.x, p.y)) {
+            if (msg == WM_MOUSEMOVE) {   // the game still sees moves, so it keeps its own mouse position current
+                WNDPROC orig = reinterpret_cast<WNDPROC>(GetPropW(h, L"birdmod_orig"));
+                CallWindowProcW(orig ? orig : g_origProc, h, msg, w, l);
+                return 0;
+            }
             if (msg == WM_LBUTTONDOWN && S.dragging) SetCapture(h);
             if (msg == WM_LBUTTONUP) ReleaseCapture();
             return 0;
@@ -1208,10 +1315,12 @@ BOOL CALLBACK FindGameWindow(HWND h, LPARAM out) {
 // destroy its window and create a new one, so this runs again every half second (from the
 // frame hook, on the game's own thread) and hooks whichever window is current.
 void HookGameWindow(HWND wnd) {
-    if (!wnd || GetWindowLongPtrW(wnd, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(&WndProc)) return;
+    if (wnd) g_gameWnd = wnd;
+    if (!wnd ||GetWindowLongPtrW(wnd, GWLP_WNDPROC) == reinterpret_cast<LONG_PTR>(&WndProc)) return;
     WNDPROC orig = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(wnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WndProc)));
     SetPropW(wnd, L"birdmod_orig", reinterpret_cast<HANDLE>(orig));
     if (!g_origProc) g_origProc = orig;
+    g_gameWnd = wnd;
     Log("mouse hooked on window %08x", unsigned(uintptr_t(wnd)));
 }
 void RehookWindowMaybe() {
@@ -1222,6 +1331,20 @@ void RehookWindowMaybe() {
     HWND wnd = nullptr;
     EnumWindows(FindGameWindow, reinterpret_cast<LPARAM>(&wnd));
     HookGameWindow(wnd);
+}
+
+// On later runs through Adventure, Crazy Dave locks 3 random plants into the seed bar before
+// the player picks. The mod turns that off so every slot is the player's to fill.
+void StopDavePicking() {
+    auto* p = reinterpret_cast<uint8_t*>(pvz::kDavePicksJump);
+    if (p[0] == 0xEB && p[1] == 0x06) return;
+    if (p[0] != 0x7E || p[1] != 0x06) { Log("Dave's picks: unexpected code %02x %02x, left alone", p[0], p[1]); return; }
+    DWORD old;
+    if (!VirtualProtect(p, 1, PAGE_EXECUTE_READWRITE, &old)) { Log("Dave's picks: could not change the code"); return; }
+    p[0] = 0xEB;
+    VirtualProtect(p, 1, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, 1);
+    Log("Crazy Dave no longer picks plants for you");
 }
 
 void Fail(const std::wstring& msg) { MessageBoxW(nullptr, msg.c_str(), L"PvZ bird mod", MB_ICONWARNING); }
@@ -1235,6 +1358,7 @@ DWORD WINAPI Init(LPVOID) {
     CreateMutexW(nullptr, FALSE, mtx);
     if (GetLastError() == ERROR_ALREADY_EXISTS) { Log("another copy is already running; this one stays off"); return 0; }
     Log("---- birdmod init, build ok");
+    StopDavePicking();
     srand(GetTickCount());   // which belt arrivals become birds
     std::wstring err;
     bool packetOk = assets::LoadPacketArt(err);
