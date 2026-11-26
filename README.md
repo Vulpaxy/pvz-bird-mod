@@ -2,7 +2,7 @@
 
 An unofficial fan mod that adds slingshot birds to **Plants vs. Zombies: Game of the Year**.
 Pick birds alongside your plants, load them into a slingshot at the left edge of the lawn,
-drag back to aim, and let go.
+drag back to aim, and let go. Pig structures on the lawn shelter the zombies until you smash them.
 
 Solo play, Adventure mode. Not affiliated with or endorsed by PopCap/EA or Rovio.
 
@@ -58,7 +58,22 @@ Birds with long recharges start each level half-charged, like Cherry Bomb.
 Zombies killed by a bird are removed at once and drop coins like any other kill, and a bird
 can take the last zombie of a level.
 
+**Pig structures:** Adventure levels where you have birds get 2-4 Angry Birds structures
+(glass, wood and stone blocks, often with a pig inside) near the zombies' end of the lawn.
+Early worlds build them mostly from glass and wood; later worlds from wood and stone, taller.
+- Zombies walk through them, but a zombie behind one is covered: peas, spikes and puffs hit the
+  structure and chip at it. Lobbed shots (cabbages, kernels, melons) fly over.
+- Birds smash them the Angry Birds way: Blues shatter glass, Chuck splits wood, Bomb cracks
+  stone, Terence flattens anything. Chuck and Hal stop at a block they can't break.
+- Blocks fall when what's under them breaks, and a falling block hurts what it lands on.
+- Snow peas turn wooden blocks to ice. An Ice-shroom turns every block on the lawn to ice.
+- Popping a pig gives 25 sun. Stella's bubbles lift pigs away.
+
 ## Changes
+**v2.0** (in progress)
+- Pig structures (above).
+- The View Birds button no longer shows on the Almanac's Plants and Zombies pages.
+
 **v1.3.2**
 - Crazy Dave no longer picks 3 plants for you on later runs through Adventure: every seed slot
   is yours to fill with plants and birds.

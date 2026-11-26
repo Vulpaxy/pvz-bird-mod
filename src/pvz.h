@@ -39,6 +39,19 @@ constexpr uint32_t Zombie_HelmHp     = 0xD0;
 constexpr uint32_t Zombie_ShieldType = 0xD8;
 constexpr uint32_t Zombie_ShieldHp   = 0xDC;
 constexpr uint32_t Zombie_Dead    = 0xEC;       // bool
+// Ice-shroom freeze: Zombie::HitIceTrap (0x546ED6) sets this to 300-400 (or 400-600) ticks.
+constexpr uint32_t Zombie_IceTrap = 0xB4;
+
+// Projectiles: DataArray at Board+0xE0 named "projectiles", 0x400 items of 0x94 bytes
+// (Board constructor 0x40B215). Fields per Projectile::ProjectileInitialize (0x474750).
+constexpr uint32_t Board_Projectiles = 0xE0;
+constexpr uint32_t Proj_Stride = 0x94;
+constexpr uint32_t Proj_Row    = 0x1C;
+constexpr uint32_t Proj_PosX   = 0x30;   // float
+constexpr uint32_t Proj_Dead   = 0x50;   // bool; the game frees dead projectiles itself
+constexpr uint32_t Proj_Motion = 0x58;   // 0 straight, 1 lobbed, 2 threepeater, 3 backwards, 4 puff, 6 star, 7 homing
+constexpr uint32_t Proj_Type   = 0x5C;   // 0 pea, 1 snow pea, 4 puff, 6 fire pea, 7 star, 8 spike ...
+constexpr uint32_t Proj_Id     = 0x90;   // DataArray id: high 16 bits non-zero while in use
 
 // SeedBank (a GameObject)
 constexpr uint32_t Bank_X = 0x08, Bank_Y = 0x0C, Bank_W = 0x10, Bank_H = 0x14;

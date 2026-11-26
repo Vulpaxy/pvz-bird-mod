@@ -55,8 +55,15 @@ constexpr float kLawnLeft = 80, kLawnRight = 800, kLawnTop = 80;
 
 struct Shot { BirdKind kind; float x0, y0, x1, y1; int t, dur; bool primary; };
 struct Dash { BirdKind kind; float x, y, endX; int row, dir; std::vector<uintptr_t> hit; };
-struct Fx { enum Kind { Ring, Blast, Sprite, Number, Bubble } kind; float x, y; int t, life, value; BirdKind bird; };
+struct Fx { enum Kind { Ring, Blast, Sprite, Number, Bubble, Gain } kind; float x, y; int t, life, value; BirdKind bird; };
 struct Trap { uintptr_t zombie; float x; int ticks; };
+
+// Pig structures (see "pig structures" below). Block x is the centre relative to the tower,
+// y the bottom above the ground line, both in game pixels.
+enum Material { Glass, Wood, Stone, PigBody };
+struct Block { Material mat; int shape; float x, y, w, h; int hp, maxHp; float vy; };
+struct Tower { int row; float cx; std::vector<Block> blocks; };
+struct Debris { const Sprite* sp; float x, y, vx, vy, w, h; int t, life; };
 
 struct State {
     uintptr_t board = 0;
@@ -73,6 +80,12 @@ struct State {
     std::vector<Dash> dashes;
     std::vector<Fx> fx;
     std::vector<Trap> traps;
+    std::vector<Tower> towers;
+    std::vector<Debris> debris;
+    bool towersMade = false;                // this level's structures were built
+    int iceMax = 0;                         // highest Ice-shroom freeze timer on a zombie last frame
+    bool projChecked = false, projOk = false;
+    DWORD lastHitSound = 0;
     std::vector<int> order;                 // seed bank slots in pick order: -1 plant, else bird
     std::map<int, int> plantIdx;            // chooser: plant seed type -> game bank index
     int origPackets = -1;                   // seed bank slots before birds took any
@@ -141,6 +154,335 @@ int HitArea(int row, int rowSpan, float x, float dx, int damage, BirdKind by) {
     return n;
 }
 
+// ---------- pig structures ----------
+// Each Adventure level with birds gets a few Angry Birds structures (glass, wood and stone blocks
+// from the player's Angry Birds install), some with a pig inside, near the zombies' end of the lawn.
+// Zombies walk straight through them, but a zombie behind one is covered: straight plant shots
+// (peas, spikes, puffs) hit the structure first and chip at it; lobbed shots fly over. Birds smash
+// them the Angry Birds way (Blues shatter glass, Chuck splits wood, Bomb cracks stone), blocks
+// fall when what holds them up breaks, and falling blocks hurt what they land on. Snow peas turn
+// wooden blocks to ice, and an Ice-shroom turns every block on the lawn to ice. A popped pig
+// gives 25 sun.
+bool Readable(uintptr_t p);
+constexpr float kAB = 0.6f;                                  // Angry Birds pixels -> lawn pixels
+const int kMatHp[4] = {300, 700, 1600, 150};
+const char* const kMatArt[3] = {"LIGHT", "WOOD", "ROCK"};
+const int kShapeW[7] = {0, 0, 41, 41, 83, 83, 168}, kShapeH[7] = {0, 0, 20, 41, 20, 41, 20};
+constexpr int kPigReward = 25;
+constexpr float kPeaBandLow = 50, kPeaBandHigh = 12;         // block heights a plant's shot can hit
+
+// How hard each bird hits each material (glass, wood, stone, pig), like in Angry Birds.
+const float kMult[kBirdCount][4] = {
+    {1.0f, 1.0f, 0.6f, 1},   // Red
+    {1.0f, 2.5f, 0.4f, 1},   // Chuck: wood
+    {1.2f, 1.2f, 2.0f, 1},   // Bomb: stone
+    {3.0f, 0.4f, 0.25f, 1},  // Blues: glass
+    {1.0f, 1.6f, 0.5f, 1},   // Hal
+    {1.5f, 1.5f, 1.5f, 1},   // Terence
+    {1.0f, 1.0f, 0.6f, 1},   // Bubbles
+    {0.0f, 0.0f, 0.0f, 0},   // Stella: lifts pigs away in bubbles instead
+};
+
+float GroundY(int row) { return RowCenterY(S.board, row) + RowHeight(S.board) * 0.38f; }
+float BlockLeft(const Tower& t, const Block& b) { return t.cx + b.x - b.w / 2; }
+float BlockRight(const Tower& t, const Block& b) { return t.cx + b.x + b.w / 2; }
+
+Block MakeBlock(Material m, int shape, float xAB, float yAB) {
+    Block b{m, shape, xAB * kAB, yAB * kAB, 0, 0, kMatHp[m], kMatHp[m], 0};
+    if (m == PigBody) { b.w = 40 * kAB; b.h = 36 * kAB; }
+    else { b.w = kShapeW[shape] * kAB; b.h = kShapeH[shape] * kAB; }
+    return b;
+}
+
+Material PickMaterial(int world) {
+    static const int w[5][3] = {{60, 40, 0}, {35, 55, 10}, {20, 50, 30}, {10, 40, 50}, {5, 35, 60}};
+    int r = rand() % 100;
+    if (r < w[world][0]) return Glass;
+    return r < w[world][0] + w[world][1] ? Wood : Stone;
+}
+
+void SoundFor(Material m, bool destroyed) {
+    DWORD now = GetTickCount();
+    if (!destroyed && now - S.lastHitSound < 250) return;   // a stream of peas shouldn't drown the game
+    S.lastHitSound = now;
+    switch (m) {
+    case Glass:   assets::Snd(destroyed ? L"light destroyed a1.wav" : L"light damage a1.wav").Play(); break;
+    case Wood:    assets::Snd(destroyed ? L"wood destroyed a1.wav" : L"wood damage a1.wav").Play(); break;
+    case Stone:   assets::Snd(destroyed ? L"rock destroyed a1.wav" : L"rock damage a1.wav").Play(); break;
+    case PigBody: assets::Snd(destroyed ? L"piglette destroyed.wav" : L"piglette damage a1.wav").Play(); break;
+    }
+}
+
+const Sprite& BlockSprite(const Block& b) {
+    char name[40];
+    if (b.mat == PigBody) {
+        int stage = b.hp * 3 > b.maxHp * 2 ? 1 : b.hp * 3 > b.maxHp ? 2 : 3;
+        wsprintfA(name, "PIG_BASIC_SMALL_0%d", stage);
+    } else {
+        int stage = std::clamp(1 + int((1.f - float(b.hp) / b.maxHp) * 4), 1, 4);
+        wsprintfA(name, "BLOCK_%s_%d_%d", kMatArt[b.mat], stage, b.shape);
+    }
+    return assets::Get(name);
+}
+
+void BuildTowers() {
+    S.towersMade = true;
+    uintptr_t b = S.board;
+    int level = pvz::rd<int>(b + pvz::Board_Level);
+    if (level < 1 || level > 49 || level % 10 == 5) return;   // X-5 mini-games and the Zomboss fight
+    int world = (level - 1) / 10;
+    int bg = pvz::rd<int>(b + pvz::Board_Background);
+    std::vector<int> rows;
+    for (int r = 0; r < RowCount(b); ++r) if (!((bg == 2 || bg == 3) && (r == 2 || r == 3))) rows.push_back(r);   // no pool rows
+    for (int i = int(rows.size()) - 1; i > 0; --i) std::swap(rows[i], rows[rand() % (i + 1)]);
+    int count = world == 0 ? 2 : world < 3 ? 2 + rand() % 2 : 3 + (world == 4 ? rand() % 2 : 0);
+    count = std::min<int>(count, int(rows.size()));
+    for (int n = 0; n < count; ++n) {
+        Tower t; t.row = rows[n];
+        t.cx = 80.f * (6 + rand() % 3) + 80;                   // columns 7-9, where the zombies come in
+        Material m = PickMaterial(world), roof = PickMaterial(world);
+        bool pig = rand() % 100 < 70;
+        int kinds = world == 0 ? 2 : world < 3 ? 3 : 4;
+        int kind = rand() % kinds;
+        auto& v = t.blocks;
+        auto hut = [&](float y) {                              // two pillars, a roof, a pig between
+            v.push_back(MakeBlock(m, 3, -45, y)); v.push_back(MakeBlock(m, 3, 45, y));
+            if (pig) v.push_back(MakeBlock(PigBody, 0, 0, y));
+            v.push_back(MakeBlock(roof, 6, 0, y + 41));
+        };
+        switch (kind) {
+        case 0: hut(0); break;
+        case 1:                                                 // a little tower, pig on top
+            v.push_back(MakeBlock(m, 5, 0, 0)); v.push_back(MakeBlock(roof, 3, 0, 41));
+            v.push_back(pig ? MakeBlock(PigBody, 0, 0, 82) : MakeBlock(roof, 2, 0, 82));
+            break;
+        case 2:                                                 // a hut on a base
+            v.push_back(MakeBlock(m, 5, -42, 0)); v.push_back(MakeBlock(m, 5, 42, 0));
+            hut(41);
+            break;
+        default:                                                // a hut on a base with a lookout on top
+            v.push_back(MakeBlock(m, 5, -42, 0)); v.push_back(MakeBlock(m, 5, 42, 0));
+            hut(41);
+            v.push_back(MakeBlock(roof, 5, 0, 102)); v.push_back(MakeBlock(m, 3, 0, 143));
+            break;
+        }
+        Log("structure: row %d x %d, kind %d, %s/%s%s", t.row, int(t.cx), kind, kMatArt[m], kMatArt[roof], pig ? ", with a pig" : "");
+        S.towers.push_back(std::move(t));
+    }
+    Log("level %d (world %d): %d pig structure(s)", level, world + 1, count);
+}
+
+void Shatter(const Tower& t, const Block& b) {
+    const Sprite& sp = BlockSprite(b);
+    float gy = GroundY(t.row), cx = t.cx + b.x, cy = gy - b.y - b.h / 2;
+    for (int i = 0; i < 4; ++i)
+        S.debris.push_back({&sp, cx, cy, float(rand() % 7 - 3), -float(2 + rand() % 3), b.w / 2, b.h / 2, 0, 40});
+}
+
+void PopPig(const Tower& t, const Block& b, const char* how) {
+    pvz::wr<int>(S.board + pvz::Board_Sun, pvz::rd<int>(S.board + pvz::Board_Sun) + kPigReward);
+    S.fx.push_back({Fx::Gain, t.cx + b.x - 10, GroundY(t.row) - b.y - b.h, 0, 80, kPigReward});
+    Log("pig popped (%s) in row %d: +%d sun", how, t.row, kPigReward);
+}
+
+// Damage one block; it breaks at 0 (swept up by SweepTowers).
+void HurtBlock(Block& b, float dmg) {
+    if (b.hp <= 0 || dmg <= 0) return;
+    b.hp -= std::max(1, int(dmg));
+    SoundFor(b.mat, b.hp <= 0);
+}
+
+void SweepTowers(const char* how) {
+    for (auto& t : S.towers) {
+        for (auto& b : t.blocks) {
+            if (b.hp > 0) continue;
+            Shatter(t, b);
+            if (b.mat == PigBody) PopPig(t, b, how);
+        }
+        t.blocks.erase(std::remove_if(t.blocks.begin(), t.blocks.end(), [](const Block& b) { return b.hp <= 0; }), t.blocks.end());
+    }
+    S.towers.erase(std::remove_if(S.towers.begin(), S.towers.end(), [](const Tower& t) { return t.blocks.empty(); }), S.towers.end());
+}
+
+// A bird coming down on (row, x): it smashes through blocks from the top, each one soaking up
+// some of the hit, until the hit is spent.
+void SmashFromAbove(BirdKind k, int row, float x, float reach, int damage) {
+    for (auto& t : S.towers) {
+        if (t.row != row) continue;
+        std::vector<Block*> hit;
+        for (auto& b : t.blocks)
+            if (b.hp > 0 && BlockRight(t, b) > x - reach && BlockLeft(t, b) < x + reach) hit.push_back(&b);
+        std::sort(hit.begin(), hit.end(), [](Block* a, Block* c) { return a->y + a->h > c->y + c->h; });
+        float rem = float(damage);
+        for (Block* b : hit) {
+            float m = kMult[k][b->mat];
+            if (m <= 0 || rem <= 0) break;
+            float eff = rem * m;
+            if (eff >= b->hp) { rem -= b->hp / m; HurtBlock(*b, float(b->hp)); }
+            else { HurtBlock(*b, eff); rem = 0; }
+        }
+        if (!hit.empty()) Log("structure hit from above: %s, row %d x %d", kBirds[k].name, row, int(x));
+    }
+}
+
+// Blast-style hits: every block in the area takes the hit.
+void SmashArea(BirdKind k, int row, int rowSpan, float x, float dx, int damage) {
+    for (auto& t : S.towers) {
+        if (std::abs(t.row - row) > rowSpan) continue;
+        int n = 0;
+        for (auto& b : t.blocks)
+            if (BlockRight(t, b) > x - dx && BlockLeft(t, b) < x + dx) { HurtBlock(b, damage * kMult[k][b.mat]); ++n; }
+        if (n) Log("structure blasted: %s, row %d, %d block(s)", kBirds[k].name, t.row, n);
+    }
+}
+
+// Stella: pigs in her 3x3 are lifted away in bubbles.
+void BubblePigs(int row, float x, float dx) {
+    for (auto& t : S.towers)
+        if (std::abs(t.row - row) <= 1)
+            for (auto& b : t.blocks)
+                if (b.mat == PigBody && BlockRight(t, b) > x - dx && BlockLeft(t, b) < x + dx) {
+                    b.hp = 0; assets::Snd(L"piglette oink a1.wav").Play();
+                    S.fx.push_back({Fx::Bubble, t.cx + b.x, GroundY(t.row) - b.y - b.h / 2, 0, 60, 0, Stella});
+                }
+}
+
+// Chuck / Hal dashing along a row: they hit the low blocks of a structure in their way and
+// stop there unless they break through.
+bool DashIntoTowers(BirdKind k, int row, float x) {
+    bool blocked = false;
+    for (auto& t : S.towers) {
+        if (t.row != row) continue;
+        for (auto& b : t.blocks) {
+            if (b.hp <= 0 || b.y > kPeaBandLow || x < BlockLeft(t, b) - 5 || x > BlockRight(t, b) + 5) continue;
+            HurtBlock(b, kBirds[k].damage * 2.f * kMult[k][b.mat]);
+            if (b.hp > 0) blocked = true;
+        }
+    }
+    if (blocked) Log("dash stopped by a structure: %s row %d x %d", kBirds[k].name, row, int(x));
+    return blocked;
+}
+
+void IceBlock(Block& b) {
+    if (b.mat == Glass || b.mat == PigBody) return;
+    b.hp = std::max(1, b.hp * kMatHp[Glass] / b.maxHp);
+    b.maxHp = kMatHp[Glass];
+    b.mat = Glass;
+}
+
+// Gravity: a block not resting on the ground or on a block under it falls, and when it lands
+// both it and what it lands on take damage from the fall (a pig under a heavy block pops).
+void TickTowerPhysics() {
+    for (auto& t : S.towers) {
+        std::sort(t.blocks.begin(), t.blocks.end(), [](const Block& a, const Block& c) { return a.y < c.y; });
+        for (size_t i = 0; i < t.blocks.size(); ++i) {
+            Block& b = t.blocks[i];
+            if (b.hp <= 0) continue;
+            float support = 0; int under = -1;
+            for (size_t j = 0; j < t.blocks.size(); ++j) {
+                const Block& o = t.blocks[j];
+                if (j == i || o.hp <= 0) continue;
+                float overlap = std::min(b.x + b.w / 2, o.x + o.w / 2) - std::max(b.x - b.w / 2, o.x - o.w / 2);
+                float top = o.y + o.h;
+                if (overlap > 3 && top <= b.y + 0.5f && top > support) { support = top; under = int(j); }
+            }
+            if (b.y <= support + 0.01f) { b.y = std::max(b.y, support); continue; }
+            b.vy += 0.3f;
+            b.y -= b.vy;
+            if (b.y > support) continue;
+            float v = b.vy;
+            b.y = support; b.vy = 0;
+            static const float weight[4] = {30, 60, 160, 10};
+            float dmg = v > 2 ? (v - 2) * 110 : 0;
+            HurtBlock(b, dmg);
+            if (under >= 0) {
+                Block& o = t.blocks[under];
+                HurtBlock(o, dmg / 2 + (o.mat == PigBody ? weight[b.mat] * v / 3 : 0));
+            }
+            if (v > 2) assets::Snd(b.mat == Stone ? L"rock collision a1.wav" : b.mat == Wood ? L"wood collision a1.wav"
+                                                  : L"ice light collision a1.wav").Play();
+        }
+    }
+    SweepTowers("crushed");
+    for (auto it = S.debris.begin(); it != S.debris.end();) {
+        it->x += it->vx; it->y += it->vy; it->vy += 0.4f;
+        if (++it->t > it->life) it = S.debris.erase(it); else ++it;
+    }
+}
+
+// Plant shots that fly into a structure with a zombie behind it hit the structure instead.
+// The game already hits zombies in front of it first, so a shot that gets this far is blocked.
+void ShieldZombies() {
+    auto& arr = *reinterpret_cast<pvz::DataArray*>(S.board + pvz::Board_Projectiles);
+    if (!S.projChecked) {
+        S.projChecked = true;
+        S.projOk = Readable(uintptr_t(arr.name)) && !lstrcmpA(arr.name, "projectiles") && arr.maxSize == 0x400;
+        Log("plant shots %s", S.projOk ? "found: structures block them" : "not recognised: structures won't block plant shots");
+    }
+    if (!S.projOk || S.towers.empty() || !arr.block) return;
+    for (uint32_t i = 0; i < arr.maxUsed && i < arr.maxSize; ++i) {
+        uintptr_t p = uintptr_t(arr.block) + i * pvz::Proj_Stride;
+        if (!(pvz::rd<uint32_t>(p + pvz::Proj_Id) & 0xFFFF0000u) || pvz::rd<uint8_t>(p + pvz::Proj_Dead)) continue;
+        int motion = pvz::rd<int>(p + pvz::Proj_Motion), type = pvz::rd<int>(p + pvz::Proj_Type);
+        if (motion != 0 && motion != 2 && motion != 4) continue;          // lobbed, backwards, homing, stars: fly past
+        int dmg = (type == 0 || type == 1 || type == 4 || type == 8) ? 20 : type == 6 ? 40 : 0;
+        if (!dmg) continue;
+        int row = pvz::rd<int>(p + pvz::Proj_Row);
+        float px = pvz::rd<float>(p + pvz::Proj_PosX) + 28;               // front of the shot
+        for (auto& t : S.towers) {
+            if (t.row != row) continue;
+            Block* first = nullptr;
+            for (auto& b : t.blocks)
+                if (b.hp > 0 && b.y < kPeaBandLow && b.y + b.h > kPeaBandHigh && (!first || BlockLeft(t, b) < BlockLeft(t, *first))) first = &b;
+            if (!first || px < BlockLeft(t, *first) || px > BlockRight(t, *first) + 10) continue;
+            if (type == 1) IceBlock(*first);                              // snow peas freeze wood into ice
+            HurtBlock(*first, float(dmg));
+            pvz::wr<uint8_t>(p + pvz::Proj_Dead, 1);
+            break;
+        }
+    }
+    SweepTowers("plant shot");
+}
+
+// Ice-shroom: the game gives every zombie a fresh freeze timer at once. When the highest
+// timer jumps up, every block on the lawn turns to ice.
+void WatchIceShroom() {
+    int top = 0;
+    ForEachZombie(S.board, [&](uintptr_t z, int, float) {
+        int v = pvz::rd<int>(z + pvz::Zombie_IceTrap);
+        if (v > 0 && v <= 600) top = std::max(top, v);
+    });
+    if (top > S.iceMax + 50 && !S.towers.empty()) {
+        for (auto& t : S.towers) for (auto& b : t.blocks) IceBlock(b);
+        assets::Snd(L"ice light collision a1.wav").Play();
+        Log("Ice-shroom: every structure turned to ice");
+    }
+    S.iceMax = top;
+}
+
+void BlitStretch(HDC dc, const Sprite& s, RECT r, BYTE alpha = 255) {
+    BLENDFUNCTION bf{AC_SRC_OVER, 0, alpha, AC_SRC_ALPHA};
+    AlphaBlend(dc, r.left, r.top, std::max<LONG>(1, r.right - r.left), std::max<LONG>(1, r.bottom - r.top), s.dc, 0, 0, s.w, s.h, bf);
+}
+
+void DrawTowers(HDC dc) {
+    static const COLORREF plain[4] = {RGB(170, 220, 240), RGB(170, 110, 50), RGB(140, 140, 140), RGB(120, 200, 60)};
+    for (auto& t : S.towers) {
+        float gy = GroundY(t.row);
+        for (auto& b : t.blocks) {
+            RECT r{LONG(BlockLeft(t, b)), LONG(gy - b.y - b.h), LONG(BlockRight(t, b)), LONG(gy - b.y)};
+            const Sprite& sp = BlockSprite(b);
+            if (sp.ok()) BlitStretch(dc, sp, r);
+            else { HBRUSH br = CreateSolidBrush(plain[b.mat]); FillRect(dc, &r, br); DeleteObject(br); }
+        }
+    }
+    for (auto& d : S.debris) {
+        if (!d.sp || !d.sp->ok()) continue;
+        RECT r{LONG(d.x - d.w / 2), LONG(d.y - d.h / 2), LONG(d.x + d.w / 2), LONG(d.y + d.h / 2)};
+        BlitStretch(dc, *d.sp, r, BYTE(255 * (1 - float(d.t) / d.life)));
+    }
+}
+
 // ---------- game logic ----------
 void Land(const Shot& s) {
     const BirdDef& d = kBirds[s.kind];
@@ -153,10 +495,12 @@ void Land(const Shot& s) {
     switch (d.effect) {
     case Impact:
         hits = HitArea(row, 0, s.x1, kImpactRadius, d.damage, s.kind);
+        SmashFromAbove(s.kind, row, s.x1, 30, d.damage);
         S.fx.push_back({Fx::Ring, s.x1, cy, 0, 25, kImpactRadius});
         break;
     case Split3:
         hits = HitArea(row, 0, s.x1, kSplitRadius, d.damage, s.kind);
+        SmashFromAbove(s.kind, row, s.x1, 25, d.damage);
         S.fx.push_back({Fx::Ring, s.x1, cy, 0, 20, kSplitRadius});
         break;
     case DashRight:
@@ -167,10 +511,12 @@ void Land(const Shot& s) {
         break;
     case Explode:
         hits = HitArea(row, 1, s.x1, kCell * 1.5f, d.damage, s.kind);
+        SmashArea(s.kind, row, 1, s.x1, kCell * 1.5f, d.damage);
         S.fx.push_back({Fx::Blast, s.x1, cy, 0, 40, int(kCell * 1.6f)});
         break;
     case ColumnCrush:
         hits = HitArea(row, 9, s.x1, kCell / 2.f + 5, d.damage, s.kind);
+        for (int r = 0; r < RowCount(b); ++r) SmashFromAbove(s.kind, r, s.x1, kCell / 2.f + 5, d.damage);
         for (int r = 0; r < RowCount(b); ++r) S.fx.push_back({Fx::Ring, s.x1, RowCenterY(b, r), 0, 30, 45});
         break;
     case PuffPush:
@@ -181,9 +527,11 @@ void Land(const Shot& s) {
                 px = std::min(px + kPushDistance, 780.f);
             }
         });
+        SmashArea(s.kind, row, 1, s.x1, kCell * 1.5f, 350);
         S.fx.push_back({Fx::Ring, s.x1, cy, 0, 30, int(kCell * 1.6f)});
         break;
     case BubbleTrap:
+        BubblePigs(row, s.x1, kCell * 1.5f);
         ForEachZombie(b, [&](uintptr_t z, int r, float cx) {
             if (std::abs(r - row) <= 1 && std::fabs(cx - s.x1) <= kCell * 1.5f) {
                 S.traps.push_back({z, pvz::rd<float>(z + pvz::Zombie_PosX), kTrapTicks}); ++hits;
@@ -192,6 +540,7 @@ void Land(const Shot& s) {
         });
         break;
     }
+    SweepTowers(d.name);
     Log("land: %s at x %d row %d, %d zombie(s) affected", d.name, int(s.x1), row, hits);
 }
 
@@ -209,6 +558,8 @@ void Tick() {
             }
         });
         bool done = it->dir > 0 ? it->x > it->endX : it->x < it->endX;
+        if (DashIntoTowers(it->kind, it->row, it->x)) done = true;
+        SweepTowers(kBirds[it->kind].name);
         if (done) it = S.dashes.erase(it); else ++it;
     }
     for (auto it = S.traps.begin(); it != S.traps.end();) {
@@ -217,6 +568,7 @@ void Tick() {
         if (!alive || --it->ticks <= 0) it = S.traps.erase(it); else ++it;
     }
     for (auto it = S.fx.begin(); it != S.fx.end();) { if (++it->t > it->life) it = S.fx.erase(it); else ++it; }
+    TickTowerPhysics();
 }
 
 void ResetForBoard(uintptr_t b) {
@@ -258,6 +610,11 @@ void Update() {
     if (ticks > 0) { S.running = true; S.idleFrames = 0; }
     else if (++S.idleFrames > 30) S.running = false;   // paused, menu, or seed picker
     while (ticks-- > 0) Tick();
+    if (S.running && S.levelChecked) {
+        if (!S.towersMade && (BirdCount() || S.conveyor)) BuildTowers();
+        ShieldZombies();
+        WatchIceShroom();
+    }
 }
 
 // ---------- launching ----------
@@ -431,6 +788,16 @@ void DrawEffects(HDC dc) {
         case Fx::Blast:
             Ring(dc, f.x, f.y, f.value * (0.3f + p), RGB(255, 200, 60), 8);
             Ring(dc, f.x, f.y, f.value * (0.2f + 0.8f * p), RGB(255, 120, 30), 5);
+            break;
+        case Fx::Gain: {     // a popped pig's sun
+            char txt[16]; wsprintfA(txt, "+%d", f.value);
+            int y = int(f.y - 40 * p);
+            SetTextColor(dc, RGB(90, 60, 0)); TextOutA(dc, int(f.x) + 1, y + 1, txt, lstrlenA(txt));
+            SetTextColor(dc, RGB(255, 230, 60)); TextOutA(dc, int(f.x), y, txt, lstrlenA(txt));
+            break;
+        }
+        case Fx::Bubble:     // Stella carrying a pig away
+            Ring(dc, f.x, f.y - 60 * p, 22, RGB(255, 150, 210), 3);
             break;
         case Fx::Number: {
             char txt[16]; wsprintfA(txt, "-%d", f.value);
@@ -707,6 +1074,7 @@ void DrawOverlay(HDC dc) {
     UpdateBelt();
     if (!BirdCount() && !S.conveyor) return;
     LayoutLevelBank();
+    DrawTowers(dc);
     DrawBankBirds(dc, true);
     if (S.conveyor) DrawBeltBirds(dc);
     DrawSlingshot(dc);

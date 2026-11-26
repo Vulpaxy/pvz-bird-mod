@@ -114,7 +114,23 @@ const wchar_t* kSounds[] = {
     L"bird 01 collision a1.wav", L"bird destroyed.wav", L"big_bird.wav",
     L"special boost.wav", L"special group.wav", L"special egg.wav", L"tnt box explodes.wav",
     L"Globe_Bird_Special_Activation_1.wav", L"Globe_Bird_Special_Activation_2.wav", L"Globe_Bird_Special_Activation_3.wav",
+    // pig structures
+    L"light damage a1.wav", L"light destroyed a1.wav", L"ice light collision a1.wav",
+    L"wood damage a1.wav", L"wood destroyed a1.wav", L"wood collision a1.wav",
+    L"rock damage a1.wav", L"rock destroyed a1.wav", L"rock collision a1.wav",
+    L"piglette damage a1.wav", L"piglette destroyed.wav", L"piglette oink a1.wav",
 };
+
+// Pig structure art: BLOCK_<LIGHT|WOOD|ROCK>_<damage 1-4>_<shape 2-6> and the small pig.
+static std::vector<std::string> StructureSprites() {
+    std::vector<std::string> v;
+    for (const char* m : {"LIGHT", "WOOD", "ROCK"})
+        for (int d = 1; d <= 4; ++d)
+            for (int sh = 2; sh <= 6; ++sh) { char n[40]; wsprintfA(n, "BLOCK_%s_%d_%d", m, d, sh); v.push_back(n); }
+    for (const char* p : {"PIG_BASIC_SMALL_01", "PIG_BASIC_SMALL_02", "PIG_BASIC_SMALL_03"}) v.push_back(p);
+    return v;
+}
+bool DecodePng(const std::vector<uint8_t>& png, std::vector<uint8_t>& px, int& w, int& h);
 
 // A value from birdmod.ini next to birdmod.dll (the launcher writes it from its arguments).
 static std::wstring IniValue(const wchar_t* key) {
@@ -146,23 +162,39 @@ std::wstring FindAngryBirdsData() {
 
 bool Load(const std::wstring& data, std::wstring& err) {
     std::map<std::string, AtlasEntry> atlas;
-    for (const wchar_t* f : {L"INGAME_BIRDS_1.dat", L"INGAME_BIRDS_2.dat", L"INGAME_TRANSPARENCY.dat"}) {
+    for (const wchar_t* f : {L"INGAME_BIRDS_1.dat", L"INGAME_BIRDS_2.dat", L"INGAME_TRANSPARENCY.dat",
+                             L"INGAME_BLOCKS_1.dat", L"INGAME_EXPLOSIONS.dat", L"INGAME_NEW_PIGS_ELEMENTS_2.dat"}) {
         std::vector<uint8_t> d;
         if (ReadFile(data + L"\\images\\base\\" + f, d)) ParseAtlas(d, atlas);
     }
     if (!atlas.count("BIRD_RED")) { err = L"Could not read the bird atlas in " + data + L"\\images\\base"; return false; }
 
     std::map<std::string, std::pair<std::vector<uint8_t>, Pvr>> images;
-    for (const char* name : kSprites) {
+    std::vector<std::string> names(std::begin(kSprites), std::end(kSprites));
+    for (auto& n : StructureSprites()) names.push_back(n);
+    for (const std::string& name : names) {
         auto it = atlas.find(name);
         if (it == atlas.end()) continue;
         const std::string& img = it->second.image;
-        if (!images.count(img)) {
-            auto& slot = images[img];
-            if (!ReadFile(data + L"\\images\\base\\" + Widen(img), slot.first) || !ParsePvr(slot.first, slot.second))
-                slot.second.px = nullptr;   // e.g. a PNG sheet: skip, flying variants fall back to idle
+        bool forBlocks = name.rfind("BLOCK_", 0) == 0 || name.rfind("PIG_", 0) == 0;
+        const std::string key = forBlocks ? img + "#blocks" : img;   // block sheets get their own PNG fallback
+        if (!images.count(key)) {
+            auto& slot = images[key];
+            std::wstring path = data + L"\\images\\base\\" + Widen(img);
+            bool ok = ReadFile(path, slot.first) && ParsePvr(slot.first, slot.second);
+            // Block sheets named as PNGs (the ice blocks): decode the PNG into RGBA8888.
+            // Bird sheets keep the old behaviour (skipped; flying variants fall back to idle).
+            if (!ok && forBlocks && img.size() > 4 && !_stricmp(img.c_str() + img.size() - 4, ".png")) {
+                std::vector<uint8_t> png; int w = 0, h = 0;
+                if (ReadFile(path, png) && DecodePng(png, slot.first, w, h)) {
+                    for (size_t i = 0; i + 3 < slot.first.size(); i += 4) std::swap(slot.first[i], slot.first[i + 2]);   // BGRA -> RGBA
+                    slot.second.w = w; slot.second.h = h; slot.second.bpp = 4; slot.second.px = slot.first.data();
+                    ok = true;
+                }
+            }
+            if (!ok) slot.second.px = nullptr;
         }
-        auto& im = images[img];
+        auto& im = images[key];
         if (im.second.px) g_sprites[name] = MakeSprite(im.second, it->second);
     }
     for (const char* need : {"BIRD_RED", "BIRD_YELLOW", "BIRD_GREY", "BIRD_BLUE", "BIRD_BOOMERANG",
@@ -235,7 +267,7 @@ static Sprite DecodePngCell(const std::vector<uint8_t>& png, int x, int y, int w
 // inside the letters (A, R, B, D).
 Sprite g_title[2];   // 0: title screen size, 1: main menu badge size
 
-static bool DecodePng(const std::vector<uint8_t>& png, std::vector<uint8_t>& px, int& w, int& h) {
+bool DecodePng(const std::vector<uint8_t>& png, std::vector<uint8_t>& px, int& w, int& h) {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     IWICImagingFactory* f = nullptr; IWICBitmapDecoder* dec = nullptr; IWICBitmapFrameDecode* fr = nullptr;
     IWICFormatConverter* cv = nullptr;
