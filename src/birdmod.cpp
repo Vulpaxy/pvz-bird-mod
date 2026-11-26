@@ -15,6 +15,7 @@
 #include <map>
 #include "pvz.h"
 #include "assets.h"
+#include "melty_test.h"
 
 namespace {
 
@@ -941,6 +942,8 @@ bool IsPrimary(void* s) {
 void RenderInto(void* surf) {
     if (g_inHook || !surf) return;
     g_inHook = true;
+    static bool reportedHook = false;
+    if (!reportedHook) { reportedHook = true; melty_test::Report("game-hooked", true); }
     Update();
     LogStatsMaybe();
     RehookWindowMaybe();   // full-screen toggles replace the game window
@@ -1165,7 +1168,9 @@ void RehookWindowMaybe() {
 void Fail(const std::wstring& msg) { MessageBoxW(nullptr, msg.c_str(), L"PvZ bird mod", MB_ICONWARNING); }
 
 DWORD WINAPI Init(LPVOID) {
-    if (!pvz::IsSupportedBuild()) { Fail(L"This Plants vs. Zombies build is not supported (needs Steam GOTY 1.2.0.1096). The bird mod is off."); return 0; }
+    melty_test::Start();
+    if (!pvz::IsSupportedBuild()) {
+        for (const char* c : {"pvz-art-read", "birds-loaded", "game-hooked"}) melty_test::Report(c, false, "unsupported PvZ build"); Fail(L"This Plants vs. Zombies build is not supported (needs Steam GOTY 1.2.0.1096). The bird mod is off."); return 0; }
     // One copy per game, even if the DLL is loaded again under another file name.
     wchar_t mtx[64]; wsprintfW(mtx, L"Local\\pvz_birdmod_%lu", GetCurrentProcessId());
     CreateMutexW(nullptr, FALSE, mtx);
@@ -1173,9 +1178,14 @@ DWORD WINAPI Init(LPVOID) {
     Log("---- birdmod init, build ok");
     srand(GetTickCount());   // which belt arrivals become birds
     std::wstring err;
-    if (!assets::LoadPacketArt(err)) Log("packet art: %ls (falling back to plain cards)", err.c_str());
+    bool packetOk = assets::LoadPacketArt(err);
+    if (!packetOk) Log("packet art: %ls (falling back to plain cards)", err.c_str());
+    melty_test::Report("pvz-art-read", packetOk, melty_test::Narrow(err));
     err.clear();
-    if (!assets::Load(assets::FindAngryBirdsData(), err)) { Fail(L"Angry Birds files not found, so the bird mod is off.\n\n" + err + L"\n\nSet AngryBirdsFolder in birdmod.ini next to birdmod.dll."); return 0; }
+    bool birdsOk = assets::Load(assets::FindAngryBirdsData(), err);
+    melty_test::Report("birds-loaded", birdsOk, melty_test::Narrow(err));
+    if (birdsOk) Log("angry birds art and sounds loaded");
+    if (!birdsOk) { melty_test::Report("game-hooked", false, "mod switched off"); Fail(L"Angry Birds files not found, so the bird mod is off.\n\n" + err + L"\n\nSet AngryBirdsFolder in birdmod.ini next to birdmod.dll."); return 0; }
     HWND wnd = nullptr;
     for (int i = 0; i < 600 && !wnd; ++i) { EnumWindows(FindGameWindow, (LPARAM)&wnd); if (!wnd) Sleep(100); }
     if (!wnd) { Fail(L"Could not find the game window."); return 0; }

@@ -12,12 +12,15 @@ Solo play, Adventure mode. Not affiliated with or endorsed by PopCap/EA or Rovio
   Angry Birds install while the game runs, and the seed-packet background from your own PvZ
   `main.pak`. Nothing from either game is included in this project or copied to disk.
 
-If Angry Birds isn't in `C:\Program Files (x86)\Rovio Entertainment Ltd\Angry Birds`, create
+On Melty, press Play: Melty tells the mod where both games are, so there is nothing to set up.
+
+Without Melty, if Angry Birds isn't in `C:\Program Files (x86)\Rovio Entertainment Ltd\Angry Birds`, create
 `birdmod.ini` next to `birdmod.dll`:
 ```ini
 [birdmod]
 AngryBirdsFolder=D:\Games\Angry Birds
 ```
+or start the launcher with `--angry-birds "D:\Games\Angry Birds" --pvz "<your PvZ folder>"`, which writes that file for you.
 
 ## Install and play
 1. Download `birdmod.dll` and `birdmod_launcher.exe` from the latest release and keep them in the same folder.
@@ -54,6 +57,11 @@ Zombies killed by a bird are removed at once and drop coins like any other kill,
 can take the last zombie of a level.
 
 ## Changes
+**v1.2.1**
+- The launcher takes `--angry-birds <folder>` and `--pvz <folder>` and saves them for the mod,
+  so it never has to guess or ask where either game is installed (Melty passes both on Play).
+- The launcher stays open until the game closes.
+
 **v1.2**
 - Bird Almanac: a View Birds panel on the Almanac's index page opens a Birds page with
   each bird's stats and a description.

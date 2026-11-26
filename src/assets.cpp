@@ -115,15 +115,26 @@ const wchar_t* kSounds[] = {
     L"Globe_Bird_Special_Activation_1.wav", L"Globe_Bird_Special_Activation_2.wav", L"Globe_Bird_Special_Activation_3.wav",
 };
 
-std::wstring FindAngryBirdsData() {
+// A value from birdmod.ini next to birdmod.dll (the launcher writes it from its arguments).
+static std::wstring IniValue(const wchar_t* key) {
     wchar_t ini[MAX_PATH]; HMODULE self = nullptr;
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                       (LPCWSTR)&FindAngryBirdsData, &self);
+                       (LPCWSTR)&IniValue, &self);
     GetModuleFileNameW(self, ini, MAX_PATH);
     if (wchar_t* slash = wcsrchr(ini, L'\\')) wcscpy(slash + 1, L"birdmod.ini");
     wchar_t dir[MAX_PATH] = L"";
-    GetPrivateProfileStringW(L"birdmod", L"AngryBirdsFolder", L"", dir, MAX_PATH, ini);
-    std::wstring root = dir;
+    GetPrivateProfileStringW(L"birdmod", key, L"", dir, MAX_PATH, ini);
+    std::wstring v = dir;
+    for (auto& c : v) if (c == L'/') c = L'\\';
+    while (!v.empty() && v.back() == L'\\') v.pop_back();
+    return v;
+}
+
+std::wstring FindAngryBirdsData() {
+    std::wstring root = IniValue(L"AngryBirdsFolder");
+    // Accept the data folder itself as well as the install folder.
+    if (!root.empty() && GetFileAttributesW((root + L"\\images").c_str()) != INVALID_FILE_ATTRIBUTES &&
+        GetFileAttributesW((root + L"\\data").c_str()) == INVALID_FILE_ATTRIBUTES) return root;
     if (root.empty()) {
         wchar_t pf[MAX_PATH] = L"";
         if (!GetEnvironmentVariableW(L"ProgramFiles(x86)", pf, MAX_PATH)) GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH);
@@ -222,7 +233,8 @@ bool LoadPacketArt(std::wstring& err) {
     wchar_t cwd[MAX_PATH]; GetCurrentDirectoryW(MAX_PATH, cwd);
     std::wstring pf; { wchar_t b[MAX_PATH] = L""; GetEnvironmentVariableW(L"ProgramFiles(x86)", b, MAX_PATH); pf = b; }
     std::vector<uint8_t> png;
-    for (const std::wstring& pak : {std::wstring(cwd) + L"\\main.pak", pf + L"\\Steam\\steamapps\\common\\Plants Vs Zombies\\main.pak"})
+    std::wstring pvzDir = IniValue(L"PvzFolder");
+    for (const std::wstring& pak : {pvzDir.empty() ? std::wstring(L"<none>") : pvzDir + L"\\main.pak", std::wstring(cwd) + L"\\main.pak", pf + L"\\Steam\\steamapps\\common\\Plants Vs Zombies\\main.pak"})
         if (ReadPakFile(pak, "images\\seeds.png", png)) break;
     if (png.empty()) { err = L"Could not read images\\seeds.png from PvZ's main.pak"; return false; }
     g_packetBg = DecodePngCell(png, 0, 0, 50, 70);   // first cell: the ordinary plant packet

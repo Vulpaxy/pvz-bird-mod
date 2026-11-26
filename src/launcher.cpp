@@ -32,12 +32,29 @@ static int Say(const wchar_t* msg, UINT icon = MB_ICONINFORMATION) {
     return 1;
 }
 
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR cmd, int) {
-    std::wstring name = (cmd && *cmd) ? cmd : L"birdmod.dll";   // optional: another DLL name, for testing
+// Arguments: [--angry-birds <folder>] [--pvz <folder>] [dll name]
+// The folders (passed by Melty or a shortcut) are saved to birdmod.ini next to
+// the DLL, which reads them, so the mod never has to ask where the games are.
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    std::wstring name = L"birdmod.dll", abDir, pvzDir;
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    for (int i = 1; argv && i < argc; ++i) {
+        if (!_wcsicmp(argv[i], L"--angry-birds") && i + 1 < argc) abDir = argv[++i];
+        else if (!_wcsicmp(argv[i], L"--pvz") && i + 1 < argc) pvzDir = argv[++i];
+        else if (argv[i][0] && argv[i][0] != L'-') name = argv[i];   // optional: another DLL name, for testing
+    }
+    if (argv) LocalFree(argv);
     wchar_t dll[MAX_PATH];
     GetModuleFileNameW(nullptr, dll, MAX_PATH);
     wcscpy(wcsrchr(dll, L'\\') + 1, name.c_str());
     if (GetFileAttributesW(dll) == INVALID_FILE_ATTRIBUTES) return Say((name + L" must be next to this launcher.").c_str(), MB_ICONERROR);
+    if (!abDir.empty() || !pvzDir.empty()) {
+        std::wstring ini = dll;
+        ini = ini.substr(0, ini.rfind(L'\\') + 1) + L"birdmod.ini";
+        if (!abDir.empty())  WritePrivateProfileStringW(L"birdmod", L"AngryBirdsFolder", abDir.c_str(), ini.c_str());
+        if (!pvzDir.empty()) WritePrivateProfileStringW(L"birdmod", L"PvzFolder", pvzDir.c_str(), ini.c_str());
+    }
 
     DWORD pid = FindProcess(L"popcapgame1.exe");
     if (!pid) {
@@ -63,5 +80,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR cmd, int) {
     VirtualFreeEx(proc, remote, 0, MEM_RELEASE);
     CloseHandle(proc);
     if (!module) return Say(L"The game refused to load birdmod.dll.", MB_ICONERROR);
+    // Stay open while the game runs, so whatever started the launcher (Melty, a
+    // shortcut) sees the game as running until the player closes it.
+    if (HANDLE game = OpenProcess(SYNCHRONIZE, FALSE, pid)) {
+        WaitForSingleObject(game, INFINITE);
+        CloseHandle(game);
+    }
     return 0;
 }
