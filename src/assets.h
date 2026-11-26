@@ -25,4 +25,7 @@ const Sound& Snd(const wchar_t* fileName);
 // Plants vs. Zombies' own seed-packet background, read from the game's main.pak.
 bool LoadPacketArt(std::wstring& err);
 const Sprite& PacketBackground();
+// The "Angry Birds" title lettering, cut from the player's Angry Birds splash screen.
+bool LoadTitleArt(const std::wstring& abDataDir, std::wstring& err);
+const Sprite& Title(bool small);     // small: main menu badge; else title screen size
 }

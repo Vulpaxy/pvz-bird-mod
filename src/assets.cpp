@@ -1,5 +1,6 @@
 #include "assets.h"
 #include <map>
+#include <algorithm>
 #include <fstream>
 #include <mmsystem.h>
 #include <wincodec.h>
@@ -227,6 +228,102 @@ static Sprite DecodePngCell(const std::vector<uint8_t>& png, int x, int y, int w
     for (IUnknown* u : {(IUnknown*)cv, (IUnknown*)fr, (IUnknown*)dec, (IUnknown*)f, (IUnknown*)st}) if (u) u->Release();
     return s;
 }
+
+// ---- The "Angry Birds" title, cut from the player's own Angry Birds splash screen.
+// The letters are white with a dark outline, painted over sky and clouds: everything reachable
+// from the crop's edge without crossing the outline is background, and so is sky showing
+// inside the letters (A, R, B, D).
+Sprite g_title[2];   // 0: title screen size, 1: main menu badge size
+
+static bool DecodePng(const std::vector<uint8_t>& png, std::vector<uint8_t>& px, int& w, int& h) {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    IWICImagingFactory* f = nullptr; IWICBitmapDecoder* dec = nullptr; IWICBitmapFrameDecode* fr = nullptr;
+    IWICFormatConverter* cv = nullptr;
+    IStream* st = SHCreateMemStream(png.data(), UINT(png.size()));
+    bool ok = false; UINT uw = 0, uh = 0;
+    if (st && SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f))) &&
+        SUCCEEDED(f->CreateDecoderFromStream(st, nullptr, WICDecodeMetadataCacheOnLoad, &dec)) &&
+        SUCCEEDED(dec->GetFrame(0, &fr)) && SUCCEEDED(fr->GetSize(&uw, &uh)) && SUCCEEDED(f->CreateFormatConverter(&cv)) &&
+        SUCCEEDED(cv->Initialize(fr, GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom))) {
+        px.resize(size_t(uw) * uh * 4);
+        ok = SUCCEEDED(cv->CopyPixels(nullptr, uw * 4, UINT(px.size()), px.data()));
+        w = int(uw); h = int(uh);
+    }
+    for (IUnknown* u : {(IUnknown*)cv, (IUnknown*)fr, (IUnknown*)dec, (IUnknown*)f, (IUnknown*)st}) if (u) u->Release();
+    return ok;
+}
+
+// Box-filter downscale of a straight-alpha BGRA image into a premultiplied DIB sprite.
+static Sprite ScaledSprite(const std::vector<uint8_t>& src, int sw, int sh, int dw) {
+    Sprite s;
+    int dh = std::max(1, sh * dw / sw);
+    BITMAPINFO bi{}; bi.bmiHeader = {sizeof(BITMAPINFOHEADER), dw, -dh, 1, 32, BI_RGB};
+    void* bits = nullptr;
+    s.bmp = CreateDIBSection(nullptr, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (!s.bmp) return s;
+    auto dst = static_cast<uint8_t*>(bits);
+    for (int y = 0; y < dh; ++y)
+        for (int x = 0; x < dw; ++x) {
+            int x0 = x * sw / dw, x1 = std::max(x0 + 1, (x + 1) * sw / dw);
+            int y0 = y * sh / dh, y1 = std::max(y0 + 1, (y + 1) * sh / dh);
+            double b = 0, g = 0, r = 0, a = 0; int n = 0;
+            for (int yy = y0; yy < y1; ++yy)
+                for (int xx = x0; xx < x1; ++xx) {
+                    const uint8_t* p = &src[(size_t(yy) * sw + xx) * 4];
+                    double al = p[3] / 255.0;
+                    b += p[0] * al; g += p[1] * al; r += p[2] * al; a += p[3]; ++n;
+                }
+            uint8_t* o = dst + (size_t(y) * dw + x) * 4;
+            o[0] = uint8_t(b / n + .5); o[1] = uint8_t(g / n + .5); o[2] = uint8_t(r / n + .5); o[3] = uint8_t(a / n + .5);
+        }
+    s.dc = CreateCompatibleDC(nullptr);
+    SelectObject(s.dc, s.bmp);
+    s.w = dw; s.h = dh;
+    return s;
+}
+
+bool LoadTitleArt(const std::wstring& data, std::wstring& err) {
+    const std::wstring dir = data + L"\\images\\1024x768_splash\\";
+    std::vector<uint8_t> d;
+    std::map<std::string, AtlasEntry> atlas;
+    if (!ReadFile(dir + L"SPLASHES_SHEET_1.dat", d) || !ParseAtlas(d, atlas) || !atlas.count("SPLASH_ANGRY_BIRDS")) {
+        err = L"No SPLASH_ANGRY_BIRDS in " + dir; return false;
+    }
+    const AtlasEntry& e = atlas["SPLASH_ANGRY_BIRDS"];
+    std::vector<uint8_t> png, img; int iw = 0, ih = 0;
+    if (!ReadFile(dir + Widen(e.image), png) || !DecodePng(png, img, iw, ih)) { err = L"Could not decode " + Widen(e.image); return false; }
+    if (e.w != 1024 || e.h != 768 || e.x + e.w > iw || e.y + e.h > ih) { err = L"Unexpected splash layout"; return false; }
+    // Where the title sits on the 1024x768 splash.
+    const int cx0 = e.x + 185, cy0 = e.y + 45, cw = 660, ch = 150;
+    std::vector<uint8_t> cut(size_t(cw) * ch * 4);
+    for (int y = 0; y < ch; ++y) memcpy(&cut[size_t(y) * cw * 4], &img[(size_t(cy0 + y) * iw + cx0) * 4], size_t(cw) * 4);
+    auto dark = [&](int i) { const uint8_t* p = &cut[size_t(i) * 4]; return std::max({p[0], p[1], p[2]}) < 90; };
+    std::vector<uint8_t> bg(size_t(cw) * ch, 0);
+    std::vector<int> stack;
+    for (int x = 0; x < cw; ++x) { stack.push_back(x); stack.push_back((ch - 1) * cw + x); }
+    for (int y = 0; y < ch; ++y) { stack.push_back(y * cw); stack.push_back(y * cw + cw - 1); }
+    while (!stack.empty()) {
+        int i = stack.back(); stack.pop_back();
+        if (bg[i] || dark(i)) continue;
+        bg[i] = 1;
+        int x = i % cw, y = i / cw;
+        if (x > 0) stack.push_back(i - 1);
+        if (x < cw - 1) stack.push_back(i + 1);
+        if (y > 0) stack.push_back(i - cw);
+        if (y < ch - 1) stack.push_back(i + cw);
+    }
+    int kept = 0;
+    for (int i = 0; i < cw * ch; ++i) {
+        uint8_t* p = &cut[size_t(i) * 4];
+        bool sky = p[0] > p[2] + 40 && p[0] > p[1] + 10;   // blue showing through a letter
+        if (bg[i] || sky) p[0] = p[1] = p[2] = p[3] = 0; else ++kept;
+    }
+    if (kept < cw * ch / 10) { err = L"The Angry Birds title could not be cut out"; return false; }
+    g_title[0] = ScaledSprite(cut, cw, ch, 330);
+    g_title[1] = ScaledSprite(cut, cw, ch, 190);
+    return g_title[0].ok() && g_title[1].ok();
+}
+const Sprite& Title(bool small) { return g_title[small ? 1 : 0]; }
 
 bool LoadPacketArt(std::wstring& err) {
     // The game runs from ProgramData but reads main.pak from its Steam folder (its working directory).

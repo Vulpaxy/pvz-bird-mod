@@ -921,6 +921,58 @@ void LogStatsMaybe() {
         C.blt, C.bltPrimary, C.bltFast, C.flip, C.renders, C.getDcFail, (unsigned)b, BirdCount(), S.running);
 }
 
+// ---------- PvZ x Angry Birds logo on the title screen and main menu ----------
+// 1 = title screen, 2 = main menu, 0 = neither. A slot counts only while it holds the
+// widget of that kind (checked by its vtable), so a stale or unexpected pointer draws nothing.
+int MenuScreen() {
+    uintptr_t app = pvz::App();
+    if (!Readable(app)) return 0;
+    auto is = [](uintptr_t w, uintptr_t vt) { return Readable(w) && pvz::rd<uintptr_t>(w) == vt; };
+    uintptr_t sel = pvz::rd<uintptr_t>(app + pvz::App_GameSelector);
+    uintptr_t title = pvz::rd<uintptr_t>(app + pvz::App_TitleScreen);
+    int screen = is(sel, pvz::kGameSelectorVtbl) ? 2 : is(title, pvz::kTitleScreenVtbl) ? 1 : 0;
+    if (screen == 2) {   // log the menu widget's box once, to place the badge against it
+        static bool logged;
+        if (!logged) { logged = true; Log("main menu widget at (%d,%d) %dx%d", pvz::rd<int>(sel + pvz::Widget_X), pvz::rd<int>(sel + pvz::Widget_Y),
+                                          pvz::rd<int>(sel + pvz::Widget_W), pvz::rd<int>(sel + pvz::Widget_H)); }
+    }
+    static int last = -1;
+    if (screen != last) {
+        last = screen;
+        Log("screen: %s (title=%08x vt=%08x, menu=%08x vt=%08x)", screen == 1 ? "title" : screen == 2 ? "main menu" : "other",
+            (unsigned)title, Readable(title) ? (unsigned)pvz::rd<uintptr_t>(title) : 0u,
+            (unsigned)sel, Readable(sel) ? (unsigned)pvz::rd<uintptr_t>(sel) : 0u);
+    }
+    return screen;
+}
+
+// The "Angry Birds" title with Red perched on its top-right corner. (x, y): the title's top-left.
+void DrawLogo(HDC dc, int x, int y, bool small) {
+    const Sprite& t = assets::Title(small);
+    if (!t.ok()) return;
+    BLENDFUNCTION bf{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
+    AlphaBlend(dc, x, y, t.w, t.h, t.dc, 0, 0, t.w, t.h, bf);
+    int red = t.h * 3 / 5;
+    int rx = x + t.w - red * 3 / 4, ry = y - red * 3 / 5;
+    BlitFit(dc, assets::Get("BIRD_RED"), RECT{rx, ry, rx + red, ry + red});
+}
+
+void DrawMenuLogo(HDC dc, int screen) {
+    static bool reported[3];
+    // The title screen widget also shows the PopCap logo on black first: wait for the title art.
+    if (screen == 1) {
+        COLORREF c = GetPixel(dc, 12, 12);
+        if (c == CLR_INVALID || (GetRValue(c) < 24 && GetGValue(c) < 24 && GetBValue(c) < 24)) return;
+    }
+    if (screen == 1) DrawLogo(dc, 400 - assets::Title(false).w / 2, 124, false);   // under the PvZ logo
+    else DrawLogo(dc, 292, 22, true);                                              // the sky above the menu stone
+    if (!reported[screen] && assets::Title(false).ok()) {
+        reported[screen] = true;
+        Log("logo drawn on the %s", screen == 1 ? "title screen" : "main menu");
+        melty_test::Report(screen == 1 ? "title-logo" : "menu-logo", true);
+    }
+}
+
 // ---------- DirectDraw hook ----------
 // IDirectDrawSurface (v1) and IDirectDrawSurface7 share slot numbers for the
 // methods used here, so one set of hooks serves both; each vtable keeps its own originals.
@@ -950,11 +1002,18 @@ void RenderInto(void* surf) {
     // While the Almanac is open (main menu or plant select) only Almanac pages are drawn.
     uintptr_t alm = FindAlmanac();
     if (!alm) A.birdsPage = false;
-    if (S.board || alm) {
+    int menu = (S.board || alm) ? 0 : MenuScreen();
+    if (S.board || alm || menu) {
         HDC dc;
         if (SUCCEEDED((VCall<HRESULT, HDC*>(surf, kGetDC, &dc)))) {
             if (alm) DrawAlmanac(dc, alm);
-            else {
+            else if (menu) {
+                RECT popups[2];
+                int n = OpenPopups(popups);
+                for (int i = 0; i < n; ++i) ExcludeClipRect(dc, popups[i].left, popups[i].top, popups[i].right, popups[i].bottom);
+                DrawMenuLogo(dc, menu);
+                SelectClipRgn(dc, nullptr);
+            } else {
                 RECT popups[2];
                 int n = OpenPopups(popups);
                 for (int i = 0; i < n; ++i) ExcludeClipRect(dc, popups[i].left, popups[i].top, popups[i].right, popups[i].bottom);
@@ -1185,6 +1244,11 @@ DWORD WINAPI Init(LPVOID) {
     bool birdsOk = assets::Load(assets::FindAngryBirdsData(), err);
     melty_test::Report("birds-loaded", birdsOk, melty_test::Narrow(err));
     if (birdsOk) Log("angry birds art and sounds loaded");
+    if (birdsOk) {
+        err.clear();
+        if (assets::LoadTitleArt(assets::FindAngryBirdsData(), err)) Log("angry birds title cut out for the menus");
+        else { Log("title logo: %ls (menus stay as they are)", err.c_str()); melty_test::Report("title-logo", false, melty_test::Narrow(err)); }
+    }
     if (!birdsOk) { melty_test::Report("game-hooked", false, "mod switched off"); Fail(L"Angry Birds files not found, so the bird mod is off.\n\n" + err + L"\n\nSet AngryBirdsFolder in birdmod.ini next to birdmod.dll."); return 0; }
     HWND wnd = nullptr;
     for (int i = 0; i < 600 && !wnd; ++i) { EnumWindows(FindGameWindow, (LPARAM)&wnd); if (!wnd) Sleep(100); }

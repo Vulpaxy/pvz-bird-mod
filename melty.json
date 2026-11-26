@@ -16,7 +16,7 @@
     "args": ["--angry-birds", "{game:custom-angry-birds}", "--pvz", "{game}"]
   },
   "test": {
-    "checks": ["pvz-art-read", "birds-loaded", "game-hooked"],
+    "checks": ["pvz-art-read", "birds-loaded", "game-hooked", "title-logo"],
     "programs": ["popcapgame1.exe", "PlantsVsZombies.exe"]
   }
 }

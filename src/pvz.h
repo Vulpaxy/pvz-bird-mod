@@ -46,6 +46,12 @@ constexpr uint32_t Bank_Visible = 0x18;         // bool
 constexpr uint32_t Bank_NumPackets = 0x24;      // slots the player fills in the seed chooser
 constexpr int SlotFirstX = 69, SlotStepX = 51, SlotY = 8, PacketW = 50, PacketH = 70;  // relative to bank
 
+// Title screen ("Click to start") and main menu widgets; LawnApp holds each while it exists.
+// Recognised by their vtables, read from the running game.
+constexpr uint32_t App_TitleScreen      = 0x86C;
+constexpr uint32_t App_GameSelector     = 0x870;
+constexpr uintptr_t kTitleScreenVtbl    = 0x6F99A8, kGameSelectorVtbl = 0x6EEC88;
+
 // SeedChooserScreen ("Choose your plants"); LawnApp holds it while it exists
 constexpr uint32_t App_SeedChooser      = 0x874;
 constexpr uint32_t Chooser_X            = 0x40, Chooser_Y = 0x44;   // widget position (slides in)

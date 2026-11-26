@@ -34,6 +34,8 @@ or start the launcher with `--angry-birds "D:\Games\Angry Birds" --pvz "<your Pv
 
 **Early levels** (1-1 to 1-9, except 1-5) have no plant select, so Red is added to the seed bar automatically.
 
+**Title screen and main menu:** a PvZ x Angry Birds logo, built from both games' own art on your PC.
+
 **Bird Almanac:** open the Almanac and click **View Birds** to see every bird's cost, recharge,
 damage, area and a short description.
 
@@ -57,6 +59,11 @@ Zombies killed by a bird are removed at once and drop coins like any other kill,
 can take the last zombie of a level.
 
 ## Changes
+**v1.3**
+- A PvZ x Angry Birds logo: the "Angry Birds" title (cut at runtime from your own Angry Birds
+  splash screen) with Red perched on it sits under the Plants vs. Zombies logo on the title
+  screen, and as a smaller badge above the stone on the main menu.
+
 **v1.2.1**
 - The launcher takes `--angry-birds <folder>` and `--pvz <folder>` and saves them for the mod,
   so it never has to guess or ask where either game is installed (Melty passes both on Play).
