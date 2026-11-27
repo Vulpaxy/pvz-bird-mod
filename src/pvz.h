@@ -103,6 +103,14 @@ inline void ZombieDieWithLoot(uintptr_t zombie) {
 // this address skips the call when the player hasn't finished Adventure; jmp skips it always.
 constexpr uintptr_t kDavePicksJump = 0x49263B;   // 7E 06 (jle +6) -> EB 06 (jmp +6)
 
+// Plant (a GameObject): board at +0x04, x at +0x08, row at +0x1C, seed type at +0x24.
+constexpr uint32_t Plant_Board = 0x04, Plant_X = 0x08, Plant_Row = 0x1C, Plant_Type = 0x24;
+// Plant::FindTargetZombie (0x46DA60): stack (plant, row), ecx = weapon (0 front, 1 back), callee pops 8.
+// Returns the zombie a plant would shoot at, or null. Shooters only test it for null at these
+// calls: Plant::FindTargetAndFire (0x465220) and the Threepeater's three-row check (0x4655D0).
+constexpr uintptr_t kFindTargetZombie = 0x46DA60;
+constexpr uintptr_t kFindTargetCalls[] = {0x465230, 0x4655EB, 0x46561E, 0x465659};
+
 template <class T> inline T rd(uintptr_t a) { return *reinterpret_cast<T*>(a); }
 template <class T> inline void wr(uintptr_t a, T v) { *reinterpret_cast<T*>(a) = v; }
 

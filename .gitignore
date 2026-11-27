@@ -3,3 +3,5 @@ dist/
 # The compiler, if downloaded here
 toolchain/
 *.log
+# Packed releases go up to Melty and GitHub releases, not the repo
+release/

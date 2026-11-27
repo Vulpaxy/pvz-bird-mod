@@ -119,7 +119,7 @@ const wchar_t* kSounds[] = {
     L"light damage a1.wav", L"light destroyed a1.wav", L"ice light collision a1.wav",
     L"wood damage a1.wav", L"wood destroyed a1.wav", L"wood collision a1.wav",
     L"rock damage a1.wav", L"rock destroyed a1.wav", L"rock collision a1.wav",
-    L"piglette damage a1.wav", L"piglette destroyed.wav", L"piglette oink a1.wav",
+    L"piglette damage a1.wav", L"piglette destroyed.wav", L"piglette oink a1.wav", L"piglette oink a5.wav",
     L"special egg explosion.wav", L"bird pushing egg out.wav",
 };
 
@@ -129,7 +129,9 @@ static std::vector<std::string> StructureSprites() {
     for (const char* m : {"LIGHT", "WOOD", "ROCK"})
         for (int d = 1; d <= 4; ++d)
             for (int sh = 2; sh <= 6; ++sh) { char n[40]; wsprintfA(n, "BLOCK_%s_%d_%d", m, d, sh); v.push_back(n); }
-    for (const char* p : {"PIG_BASIC_SMALL_01", "PIG_BASIC_SMALL_02", "PIG_BASIC_SMALL_03"}) v.push_back(p);
+    // Every pig in the family, each with its three damage stages.
+    for (const char* p : {"BASIC_SMALL", "BASIC_MEDIUM", "BASIC_BIG", "HELMET", "MUSTACHE", "KING"})
+        for (int d = 1; d <= 3; ++d) { char n[40]; wsprintfA(n, "PIG_%s_0%d", p, d); v.push_back(n); }
     return v;
 }
 bool DecodePng(const std::vector<uint8_t>& png, std::vector<uint8_t>& px, int& w, int& h);
@@ -165,7 +167,8 @@ std::wstring FindAngryBirdsData() {
 bool Load(const std::wstring& data, std::wstring& err) {
     std::map<std::string, AtlasEntry> atlas;
     for (const wchar_t* f : {L"INGAME_BIRDS_1.dat", L"INGAME_BIRDS_2.dat", L"INGAME_TRANSPARENCY.dat",
-                             L"INGAME_BLOCKS_1.dat", L"INGAME_EXPLOSIONS.dat", L"INGAME_NEW_PIGS_ELEMENTS_2.dat"}) {
+                             L"INGAME_BLOCKS_1.dat", L"INGAME_EXPLOSIONS.dat", L"INGAME_NEW_PIGS_ELEMENTS.dat",
+                             L"INGAME_NEW_PIGS_ELEMENTS_2.dat"}) {
         std::vector<uint8_t> d;
         if (ReadFile(data + L"\\images\\base\\" + f, d)) ParseAtlas(d, atlas);
     }

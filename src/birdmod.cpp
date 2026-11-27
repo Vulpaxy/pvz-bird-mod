@@ -9,13 +9,17 @@
 #include <windows.h>
 #include <ddraw.h>
 #include <cmath>
+#include <cstring>
 #include <vector>
 #include <algorithm>
 #include <cstdarg>
 #include <map>
+#include <string>
 #include "pvz.h"
 #include "assets.h"
 #include "melty_test.h"
+
+extern "C" void birdmod_FindTargetStub();
 
 namespace {
 
@@ -57,15 +61,17 @@ constexpr float kSlingX = 42, kSlingY = 330, kMaxPull = 90;
 constexpr float kLawnLeft = 80, kLawnRight = 800, kLawnTop = 80;
 
 struct Shot { BirdKind kind; float x0, y0, x1, y1; int t, dur; bool primary; };
-struct Dash { BirdKind kind; float x, y, endX; int row, dir; std::vector<uintptr_t> hit; };
-struct Fx { enum Kind { Ring, Blast, Sprite, Number, Bubble, Gain, Away } kind; float x, y; int t, life, value; BirdKind bird; };
+struct Dash { BirdKind kind; float x, y, endX; int row, dir; std::vector<uintptr_t> hit; float power; };
+struct Fx { enum Kind { Ring, Blast, Sprite, Number, Bubble, Gain, Away, Thud, Frost } kind; float x, y; int t, life, value; BirdKind bird; };
 struct Trap { uintptr_t zombie; float x; int ticks; };
 
 // Pig structures (see "pig structures" below). Block x is the centre relative to the tower,
 // y the bottom above the ground line, both in game pixels.
 enum Material { Glass, Wood, Stone, PigBody };
-struct Block { Material mat; int shape; float x, y, w, h; int hp, maxHp; float vy; };
+enum PigKind { PigSmall, PigMedium, PigBig, PigHelmet, PigMustache, PigKing, kPigKinds };
+struct Block { Material mat; int shape; float x, y, w, h; int hp, maxHp; float vy; int pig = PigSmall; float vx = 0; };
 struct Tower { int row; float cx; std::vector<Block> blocks; };
+struct Melon { float x; int row; bool seen; };
 struct Debris { const Sprite* sp; float x, y, vx, vy, w, h; int t, life; };
 
 struct State {
@@ -88,6 +94,7 @@ struct State {
     bool towersMade = false;                // this level's structures were built
     int iceMax = 0;                         // highest Ice-shroom freeze timer on a zombie last frame
     bool projChecked = false, projOk = false;
+    std::map<uint32_t, Melon> melons;       // winter melons in flight, by projectile id
     DWORD lastHitSound = 0;
     std::vector<int> order;                 // seed bank slots in pick order: -1 plant, else bird
     std::map<int, int> plantIdx;            // chooser: plant seed type -> game bank index
@@ -159,7 +166,7 @@ int HitArea(int row, int rowSpan, float x, float dx, int damage, BirdKind by) {
 
 // ---------- pig structures ----------
 // Each Adventure level with birds gets a few Angry Birds structures (glass, wood and stone blocks
-// from the player's Angry Birds install), some with a pig inside, near the zombies' end of the lawn.
+// from the player's Angry Birds install), some with a pig inside, anywhere from column 4 on.
 // Zombies walk straight through them, but a zombie behind one is covered: straight plant shots
 // (peas, spikes, puffs) hit the structure first and chip at it; lobbed shots fly over. Birds smash
 // them the Angry Birds way (Blues shatter glass, Chuck splits wood, Bomb cracks stone), blocks
@@ -167,11 +174,24 @@ int HitArea(int row, int rowSpan, float x, float dx, int damage, BirdKind by) {
 // wooden blocks to ice, and an Ice-shroom turns every block on the lawn to ice. A popped pig
 // gives 25 sun.
 bool Readable(uintptr_t p);
-constexpr float kAB = 0.6f;                                  // Angry Birds pixels -> lawn pixels
+// Blocks and pigs are drawn at 0.9 of their Angry Birds size, close to the birds' own size on the
+// lawn (birds are drawn at 1:1), so a pig looks about as big as the bird that hits it.
+constexpr float kAB = 0.9f;                                  // Angry Birds pixels -> lawn pixels
 const int kMatHp[4] = {300, 700, 1600, 150};
+
+// The pig family. Tougher pigs take more hits and pay more sun when they pop. The King Pig only
+// shows up in the Dr. Zomboss fight.
+struct PigDef { const char* art; const char* name; int hp, sun; float w, h; };   // w/h: fallback size in AB pixels
+const PigDef kPigs[kPigKinds] = {
+    {"BASIC_SMALL",  "Small Pig",    150,  25, 40, 36},
+    {"BASIC_MEDIUM", "Medium Pig",   260,  25, 52, 47},
+    {"BASIC_BIG",    "Big Pig",      420,  50, 66, 60},
+    {"HELMET",       "Helmet Pig",   650,  50, 56, 54},
+    {"MUSTACHE",     "Mustache Pig", 900,  75, 64, 60},
+    {"KING",         "King Pig",    2400, 200, 88, 92},
+};
 const char* const kMatArt[3] = {"LIGHT", "WOOD", "ROCK"};
 const int kShapeW[7] = {0, 0, 41, 41, 83, 83, 168}, kShapeH[7] = {0, 0, 20, 41, 20, 41, 20};
-constexpr int kPigReward = 25;
 constexpr float kPeaBandLow = 50, kPeaBandHigh = 12;         // block heights a plant's shot can hit
 
 // How hard each bird hits each material (glass, wood, stone, pig), like in Angry Birds.
@@ -191,11 +211,43 @@ float GroundY(int row) { return RowCenterY(S.board, row) + RowHeight(S.board) * 
 float BlockLeft(const Tower& t, const Block& b) { return t.cx + b.x - b.w / 2; }
 float BlockRight(const Tower& t, const Block& b) { return t.cx + b.x + b.w / 2; }
 
+const Sprite& PigSprite(int pig, int stage) {
+    char name[40];
+    wsprintfA(name, "PIG_%s_0%d", kPigs[pig].art, stage);
+    return assets::Get(name);
+}
+// A pig's size in Angry Birds pixels: its own picture's size, or the table's if the picture is missing.
+void PigSizeAB(int pig, float& w, float& h) {
+    const Sprite& sp = PigSprite(pig, 1);
+    if (sp.ok() && sp.w > 8 && sp.h > 8) { w = float(sp.w); h = float(sp.h); }
+    else { w = kPigs[pig].w; h = kPigs[pig].h; }
+}
 Block MakeBlock(Material m, int shape, float xAB, float yAB) {
     Block b{m, shape, xAB * kAB, yAB * kAB, 0, 0, kMatHp[m], kMatHp[m], 0};
-    if (m == PigBody) { b.w = 40 * kAB; b.h = 36 * kAB; }
-    else { b.w = kShapeW[shape] * kAB; b.h = kShapeH[shape] * kAB; }
+    b.w = kShapeW[shape] * kAB; b.h = kShapeH[shape] * kAB;
     return b;
+}
+// A block stretched to a given width (AB pixels): roof planks that reach from pillar to pillar.
+Block MakePlank(Material m, int shape, float xAB, float yAB, float wAB) {
+    Block b = MakeBlock(m, shape, xAB, yAB);
+    b.w = wAB * kAB;
+    return b;
+}
+Block MakePig(int pig, float xAB, float yAB) {
+    Block b{PigBody, 0, xAB * kAB, yAB * kAB, 0, 0, kPigs[pig].hp, kPigs[pig].hp, 0, pig};
+    float w, h; PigSizeAB(pig, w, h);
+    b.w = w * kAB; b.h = h * kAB;
+    return b;
+}
+
+// Which pig turns up, by world: small and medium pigs early, then big and helmet pigs,
+// then mustache pigs toward the end.
+int PickPig(int world) {
+    static const int w[5][5] = {{60, 40, 0, 0, 0}, {30, 40, 20, 10, 0}, {20, 30, 25, 20, 5},
+                                {0, 25, 30, 30, 15}, {0, 15, 30, 30, 25}};
+    int r = rand() % 100;
+    for (int k = 0; k < 5; ++k) { if (r < w[world][k]) return k; r -= w[world][k]; }
+    return PigMedium;
 }
 
 Material PickMaterial(int world) {
@@ -221,7 +273,8 @@ const Sprite& BlockSprite(const Block& b) {
     char name[40];
     if (b.mat == PigBody) {
         int stage = b.hp * 3 > b.maxHp * 2 ? 1 : b.hp * 3 > b.maxHp ? 2 : 3;
-        wsprintfA(name, "PIG_BASIC_SMALL_0%d", stage);
+        const Sprite& sp = PigSprite(b.pig, stage);
+        return sp.ok() ? sp : PigSprite(b.pig, 1);
     } else {
         int stage = std::clamp(1 + int((1.f - float(b.hp) / b.maxHp) * 4), 1, 4);
         wsprintfA(name, "BLOCK_%s_%d_%d", kMatArt[b.mat], stage, b.shape);
@@ -229,51 +282,130 @@ const Sprite& BlockSprite(const Block& b) {
     return assets::Get(name);
 }
 
+// ---- structure layouts (all sizes in Angry Birds pixels, x measured from the structure's middle) ----
+// A structure is a row of bays, each one a gap between square pillars with a pig (or nothing) in
+// it and a plank across the top. Pillars stand as tall as the pig between them, and a bay is as
+// wide as its pig, so big pigs get big huts. Wide structures stretch across two or three lawn
+// squares. Everything stands on real supports: the physics below decides what falls.
+constexpr float kPillar = 41;
+constexpr float kMaxWidthAB = (3 * kCell - 12) / kAB;          // three lawn squares at most
+float BayWidth(int pig) { float w = 30, h; if (pig >= 0) PigSizeAB(pig, w, h); return std::max(30.f, w + 8); }
+float BayHeight(int pig) { float w, h = 36; if (pig >= 0) PigSizeAB(pig, w, h); return h; }
+float BaysWidth(const std::vector<int>& bays) {
+    float w = kPillar;
+    for (int p : bays) w += BayWidth(p) + kPillar;
+    return w;
+}
+// A row of bays from y up; returns the height of its roof's top.
+float AddBays(std::vector<Block>& v, Material m, Material roof, const std::vector<int>& bays, float y) {
+    float tall = 0;
+    for (int p : bays) tall = std::max(tall, BayHeight(p));
+    int stack = std::max(1, int(std::ceil((tall + 2) / kPillar)));
+    float x = -BaysWidth(bays) / 2 + kPillar / 2;                 // first pillar's middle
+    auto pillar = [&](float px) { for (int k = 0; k < stack; ++k) v.push_back(MakeBlock(m, 3, px, y + kPillar * k)); };
+    pillar(x);
+    for (int p : bays) {
+        float bw = BayWidth(p), next = x + kPillar + bw;
+        if (p >= 0) v.push_back(MakePig(p, (x + next) / 2, y));
+        pillar(next);
+        float span = next - x + kPillar;                          // from the outside of one pillar to the other
+        v.push_back(MakePlank(roof, span > 125 ? 6 : 4, (x + next) / 2, y + kPillar * stack, span));
+        x = next;
+    }
+    return y + kPillar * stack + 20;
+}
+// A flat base of slabs under the whole width.
+float AddBase(std::vector<Block>& v, Material m, float width, float y) {
+    int n = std::max(1, int(std::ceil(width / 83.f)));
+    float w = width / n;
+    for (int i = 0; i < n; ++i) v.push_back(MakePlank(m, 5, -width / 2 + w * (i + 0.5f), y, w));
+    return y + 41;
+}
+
+// Builds one structure; returns its width in lawn pixels.
+float MakeStructure(Tower& t, int world, bool king, int& style, int& pigs) {
+    auto& v = t.blocks;
+    pigs = 0;
+    if (king) {                                                   // the King's stone hall with a lookout on each corner
+        std::vector<int> bays{PigKing};
+        float top = AddBays(v, Stone, Stone, bays, 0);
+        float half = BaysWidth(bays) / 2 - kPillar / 2;
+        v.push_back(MakeBlock(Wood, 3, -half, top)); v.push_back(MakeBlock(Wood, 3, half, top));
+        style = 9; pigs = 1;
+        return BaysWidth(bays) * kAB;
+    }
+    Material m = PickMaterial(world), roof = PickMaterial(world);
+    style = rand() % (world == 0 ? 2 : world < 3 ? 3 : 4);
+    auto pig = [&]() { int p = rand() % 100 < 85 ? PickPig(world) : -1; if (p >= 0) ++pigs; return p; };
+    if (style == 0) {                                             // a one-square tower, a pig on top
+        int p = rand() % 100 < 85 ? (rand() % 2 ? PigSmall : PigMedium) : -1;
+        if (p >= 0) ++pigs;
+        v.push_back(MakeBlock(m, 5, 0, 0)); v.push_back(MakeBlock(roof, 3, 0, 41));
+        if (p >= 0) v.push_back(MakePig(p, 0, 82)); else v.push_back(MakeBlock(roof, 2, 0, 82));
+        return 83 * kAB;
+    }
+    std::vector<int> bays;
+    int want = 1 + rand() % (world == 0 ? 2 : 3);
+    for (int i = 0; i < want; ++i) bays.push_back(pig());
+    while (bays.size() > 1 && BaysWidth(bays) > kMaxWidthAB) { if (bays.back() >= 0) --pigs; bays.pop_back(); }
+    float width = BaysWidth(bays);
+    float y = 0;
+    if (style >= 2) y = AddBase(v, m, width, 0);                  // a hut row on a base
+    float top = AddBays(v, m, roof, bays, y);
+    if (style == 3 && top <= 145) {                               // a lookout on top (only on the lower huts)
+        v.push_back(MakeBlock(roof, 5, 0, top));
+        if (rand() % 100 < 60) { v.push_back(MakePig(PigSmall, 0, top + 41)); ++pigs; }
+        else v.push_back(MakeBlock(m, 3, 0, top + 41));
+    }
+    return width * kAB;
+}
+
 void BuildTowers() {
     S.towersMade = true;
     uintptr_t b = S.board;
     int level = pvz::rd<int>(b + pvz::Board_Level);
-    if (level < 1 || level > 49 || level % 10 == 5) return;   // X-5 mini-games and the Zomboss fight
-    int world = (level - 1) / 10;
+    bool zomboss = level == 50;
+    if (level < 1 || level > 50 || level % 10 == 5) return;   // X-5 mini-games
+    int world = std::min(4, (level - 1) / 10);
     int bg = pvz::rd<int>(b + pvz::Board_Background);
-    std::vector<int> rows;
-    for (int r = 0; r < RowCount(b); ++r) if (!((bg == 2 || bg == 3) && (r == 2 || r == 3))) rows.push_back(r);   // no pool rows
-    for (int i = int(rows.size()) - 1; i > 0; --i) std::swap(rows[i], rows[rand() % (i + 1)]);
-    int count = world == 0 ? 2 : world < 3 ? 2 + rand() % 2 : 3 + (world == 4 ? rand() % 2 : 0);
-    count = std::min<int>(count, int(rows.size()));
-    for (int n = 0; n < count; ++n) {
-        Tower t; t.row = rows[n];
-        t.cx = 80.f * (6 + rand() % 3) + 80;                   // columns 7-9, where the zombies come in
-        Material m = PickMaterial(world), roof = PickMaterial(world);
-        bool pig = rand() % 100 < 70;
-        int kinds = world == 0 ? 2 : world < 3 ? 3 : 4;
-        int kind = rand() % kinds;
-        auto& v = t.blocks;
-        auto hut = [&](float y) {                              // two pillars, a roof, a pig between
-            v.push_back(MakeBlock(m, 3, -45, y)); v.push_back(MakeBlock(m, 3, 45, y));
-            if (pig) v.push_back(MakeBlock(PigBody, 0, 0, y));
-            v.push_back(MakeBlock(roof, 6, 0, y + 41));
-        };
-        switch (kind) {
-        case 0: hut(0); break;
-        case 1:                                                 // a little tower, pig on top
-            v.push_back(MakeBlock(m, 5, 0, 0)); v.push_back(MakeBlock(roof, 3, 0, 41));
-            v.push_back(pig ? MakeBlock(PigBody, 0, 0, 82) : MakeBlock(roof, 2, 0, 82));
-            break;
-        case 2:                                                 // a hut on a base
-            v.push_back(MakeBlock(m, 5, -42, 0)); v.push_back(MakeBlock(m, 5, 42, 0));
-            hut(41);
-            break;
-        default:                                                // a hut on a base with a lookout on top
-            v.push_back(MakeBlock(m, 5, -42, 0)); v.push_back(MakeBlock(m, 5, 42, 0));
-            hut(41);
-            v.push_back(MakeBlock(roof, 5, 0, 102)); v.push_back(MakeBlock(m, 3, 0, 143));
-            break;
+    // Structures stand anywhere from column 4 to column 9 (the three columns by the house stay
+    // clear), on any row but the pool's water rows, and may cover two or three squares. Two in
+    // one row never share a square. Every level rolls a fresh layout. In the Dr. Zomboss fight
+    // his robot fills the far end of the roof, so they stay in columns 4 to 6, and the King
+    // Pig's hall takes the middle row.
+    int lastCol = zomboss ? 6 : 9;
+    std::vector<std::vector<bool>> used(RowCount(b), std::vector<bool>(11, false));
+    int count = 2 + rand() % 3;                                   // 2 to 4 structures a level
+    int made = 0;
+    for (int n = 0; n < count + 6 && made < count; ++n) {        // a few spare tries when the lawn is full
+        bool king = zomboss && made == 0;
+        Tower t;
+        int style = 0, pigs = 0;
+        float width = MakeStructure(t, world, king, style, pigs);
+        int span = std::max(1, int(std::ceil((width + 6) / kCell)));
+        struct Spot { int row, col; };
+        std::vector<Spot> spots;
+        for (int r = 0; r < RowCount(b); ++r) {
+            if ((bg == 2 || bg == 3) && (r == 2 || r == 3)) continue;   // no pool rows
+            if (king && r != RowCount(b) / 2) continue;
+            for (int c = 4; c + span - 1 <= lastCol; ++c) {
+                bool free = true;
+                for (int k = 0; k < span; ++k) if (used[r][c + k]) free = false;
+                if (free) spots.push_back({r, c});
+            }
         }
-        Log("structure: row %d x %d, kind %d, %s/%s%s", t.row, int(t.cx), kind, kMatArt[m], kMatArt[roof], pig ? ", with a pig" : "");
+        if (spots.empty()) continue;
+        Spot sp = spots[rand() % spots.size()];
+        for (int k = 0; k < span; ++k) used[sp.row][sp.col + k] = true;
+        t.row = sp.row;
+        t.cx = kLawnLeft + kCell * (sp.col - 1) + span * kCell / 2.f;
+        Log("structure: row %d columns %d-%d, style %d, %d block(s), %d pig(s)%s", t.row, sp.col, sp.col + span - 1, style,
+            int(t.blocks.size()), pigs, king ? ", the King Pig" : "");
         S.towers.push_back(std::move(t));
+        ++made;
     }
-    Log("level %d (world %d): %d pig structure(s)", level, world + 1, count);
+    Log("level %d (world %d): %d pig structure(s)%s", level, world + 1, made, zomboss ? ", King Pig's hall" : "");
+    melty_test::Report("pig-structures", made >= 2, "only " + std::to_string(made) + " structures fit");
 }
 
 void Shatter(const Tower& t, const Block& b) {
@@ -284,12 +416,14 @@ void Shatter(const Tower& t, const Block& b) {
 }
 
 void PopPig(const Tower& t, const Block& b, const char* how) {
-    pvz::wr<int>(S.board + pvz::Board_Sun, pvz::rd<int>(S.board + pvz::Board_Sun) + kPigReward);
-    S.fx.push_back({Fx::Gain, t.cx + b.x - 10, GroundY(t.row) - b.y - b.h, 0, 80, kPigReward});
-    Log("pig popped (%s) in row %d: +%d sun", how, t.row, kPigReward);
+    int sun = kPigs[b.pig].sun;
+    pvz::wr<int>(S.board + pvz::Board_Sun, pvz::rd<int>(S.board + pvz::Board_Sun) + sun);
+    S.fx.push_back({Fx::Gain, t.cx + b.x - 10, GroundY(t.row) - b.y - b.h, 0, 80, sun});
+    Log("%s popped (%s) in row %d: +%d sun", kPigs[b.pig].name, how, t.row, sun);
 }
 
 // Damage one block; it breaks at 0 (swept up by SweepTowers).
+void Nudge(Block& b, float dvx, float lift = 0);
 void HurtBlock(Block& b, float dmg) {
     if (b.hp <= 0 || dmg <= 0) return;
     b.hp -= std::max(1, int(dmg));
@@ -323,7 +457,7 @@ void SmashFromAbove(BirdKind k, int row, float x, float reach, int damage) {
             if (m <= 0 || rem <= 0) break;
             float eff = rem * m;
             if (eff >= b->hp) { rem -= b->hp / m; HurtBlock(*b, float(b->hp)); }
-            else { HurtBlock(*b, eff); rem = 0; }
+            else { HurtBlock(*b, eff); Nudge(*b, 1.5f + 2.5f * eff / b->maxHp); rem = 0; }
         }
         if (!hit.empty()) Log("structure hit from above: %s, row %d x %d", kBirds[k].name, row, int(x));
     }
@@ -335,7 +469,14 @@ void SmashArea(BirdKind k, int row, int rowSpan, float x, float dx, int damage) 
         if (std::abs(t.row - row) > rowSpan) continue;
         int n = 0;
         for (auto& b : t.blocks)
-            if (BlockRight(t, b) > x - dx && BlockLeft(t, b) < x + dx) { HurtBlock(b, damage * kMult[k][b.mat]); ++n; }
+            if (BlockRight(t, b) > x - dx && BlockLeft(t, b) < x + dx) {
+                HurtBlock(b, damage * kMult[k][b.mat]); ++n;
+                if (k == Bomb || k == Matilda) {
+                    float off = t.cx + b.x - x, nearK = 1.f - std::min(1.f, std::fabs(off) / (dx + b.w / 2));
+                    Nudge(b, (off >= 0 ? 1.f : -1.f) * (1.5f + 4.f * nearK), t.row == row ? 2.f + 3.f * nearK : 0);
+                }
+                else if (k == Bubbles) Nudge(b, 4.f);                 // Bubbles puffs up and shoves blocks back too
+            }
         if (n) Log("structure blasted: %s, row %d, %d block(s)", kBirds[k].name, t.row, n);
     }
 }
@@ -345,26 +486,43 @@ void BubblePigs(int row, float x, float dx) {
     for (auto& t : S.towers)
         if (std::abs(t.row - row) <= 1)
             for (auto& b : t.blocks)
-                if (b.mat == PigBody && BlockRight(t, b) > x - dx && BlockLeft(t, b) < x + dx) {
+                if (b.mat == PigBody && b.pig != PigKing && BlockRight(t, b) > x - dx && BlockLeft(t, b) < x + dx) {
                     b.hp = 0; assets::Snd(L"piglette oink a1.wav").Play();
                     S.fx.push_back({Fx::Bubble, t.cx + b.x, GroundY(t.row) - b.y - b.h / 2, 0, 60, 0, Stella});
                 }
 }
 
-// Chuck / Hal dashing along a row: they hit the low blocks of a structure in their way and
-// stop there unless they break through.
-bool DashIntoTowers(BirdKind k, int row, float x) {
-    bool blocked = false;
+// Chuck / Hal dashing along a row hit the low blocks of a structure the way a bird hits blocks
+// in Angry Birds: the dash has so much push, each block it breaks uses up some of it, and the
+// bird stops at the block that's left standing (stone stops Chuck dead; he splinters through
+// wood and glass but slows with every block). Returns true when the bird is stopped.
+constexpr float kDashPower = 600;
+bool DashIntoTowers(Dash& d) {
+    BirdKind k = d.kind;
     for (auto& t : S.towers) {
-        if (t.row != row) continue;
-        for (auto& b : t.blocks) {
-            if (b.hp <= 0 || b.y > kPeaBandLow || x < BlockLeft(t, b) - 5 || x > BlockRight(t, b) + 5) continue;
-            HurtBlock(b, kBirds[k].damage * 2.f * kMult[k][b.mat]);
-            if (b.hp > 0) blocked = true;
+        if (t.row != d.row) continue;
+        std::vector<Block*> inWay;
+        for (auto& b : t.blocks)
+            if (b.hp > 0 && b.y <= kPeaBandLow && d.x >= BlockLeft(t, b) - 5 && d.x <= BlockRight(t, b) + 5) inWay.push_back(&b);
+        std::sort(inWay.begin(), inWay.end(), [](Block* a, Block* c) { return a->y < c->y; });   // ground block first
+        for (Block* b : inWay) {
+            float m = kMult[k][b->mat];
+            float eff = d.power * m;
+            if (m > 0 && eff >= b->hp) { d.power -= b->hp / m; HurtBlock(*b, float(b->hp)); continue; }
+            HurtBlock(*b, eff);
+            Nudge(*b, d.dir * (1.f + 3.f * eff / b->maxHp));
+            d.power = 0;
+        }
+        if (!inWay.empty()) {
+            Log("dash hit a structure: %s row %d x %d, push left %d", kBirds[k].name, d.row, int(d.x), int(d.power));
+            if (d.power < 60) d.power = 0;          // too slow to carry on
+        }
+        if (d.power <= 0) {
+            S.fx.push_back({Fx::Thud, d.x, d.y, 0, 45, d.dir, k});
+            return true;
         }
     }
-    if (blocked) Log("dash stopped by a structure: %s row %d x %d", kBirds[k].name, row, int(x));
-    return blocked;
+    return false;
 }
 
 void IceBlock(Block& b) {
@@ -374,37 +532,90 @@ void IceBlock(Block& b) {
     b.mat = Glass;
 }
 
-// Gravity: a block not resting on the ground or on a block under it falls, and when it lands
-// both it and what it lands on take damage from the fall (a pig under a heavy block pops).
+// Physics. Every block and pig has weight and speed. A hit shoves what it doesn't break, so
+// blocks slide, bump into their neighbours and pass the push along. Anything not resting on the
+// ground or on a block under it falls; anything resting with its middle past the edge of what
+// holds it up tips off that side and slides away. A landing hurts both the block that falls and
+// what it lands on (a pig under a heavy block pops), and so does a hard sideways bump.
+const float kWeight[4] = {30, 60, 160, 20};
+float Weight(const Block& b) { return b.mat == PigBody ? 20.f + kPigs[b.pig].hp / 40.f : kWeight[b.mat]; }
+// Push a block: dvx sideways (+ is toward the zombies), lift > 0 throws it up.
+void Nudge(Block& b, float dvx, float lift) {
+    if (b.hp <= 0) return;
+    float k = 60.f / Weight(b);
+    b.vx = std::clamp(b.vx + dvx * k, -9.f, 9.f);
+    if (lift > 0) { b.vy = std::min(b.vy, -lift * std::sqrt(k)); b.y += 0.5f; }
+}
 void TickTowerPhysics() {
     for (auto& t : S.towers) {
-        std::sort(t.blocks.begin(), t.blocks.end(), [](const Block& a, const Block& c) { return a.y < c.y; });
-        for (size_t i = 0; i < t.blocks.size(); ++i) {
-            Block& b = t.blocks[i];
+        auto& v = t.blocks;
+        std::sort(v.begin(), v.end(), [](const Block& a, const Block& c) { return a.y < c.y; });
+        for (size_t i = 0; i < v.size(); ++i) {
+            Block& b = v[i];
             if (b.hp <= 0) continue;
-            float support = 0; int under = -1;
-            for (size_t j = 0; j < t.blocks.size(); ++j) {
-                const Block& o = t.blocks[j];
+            // Sideways: move, unless that runs into a block beside it, which takes the push.
+            if (std::fabs(b.vx) > 0.01f) {
+                float nx = b.x + b.vx;
+                bool blocked = false;
+                for (size_t j = 0; j < v.size() && !blocked; ++j) {
+                    Block& o = v[j];
+                    if (j == i || o.hp <= 0) continue;
+                    if (std::min(b.y + b.h, o.y + o.h) - std::max(b.y, o.y) <= 3) continue;           // not beside it
+                    if (std::min(b.x + b.w / 2, o.x + o.w / 2) - std::max(b.x - b.w / 2, o.x - o.w / 2) > 0) continue;
+                    if (std::min(nx + b.w / 2, o.x + o.w / 2) - std::max(nx - b.w / 2, o.x - o.w / 2) <= 0) continue;
+                    float mb = Weight(b), mo = Weight(o), sp = b.vx;
+                    o.vx = std::clamp(o.vx + sp * mb / (mb + mo) * 1.2f, -9.f, 9.f);
+                    b.vx = sp * (mb - mo) / (mb + mo) * 0.5f;
+                    if (std::fabs(sp) > 2.5f) {
+                        HurtBlock(o, (std::fabs(sp) - 2.5f) * 30 * mb / 60);
+                        HurtBlock(b, (std::fabs(sp) - 2.5f) * 30 * mo / 60);
+                    }
+                    blocked = true;
+                }
+                if (!blocked) b.x = nx;
+            }
+            // What holds it up: the highest top under it, and how far those supports reach.
+            float support = 0, spanL = 1e9f, spanR = -1e9f; int under = -1;
+            for (size_t j = 0; j < v.size(); ++j) {
+                const Block& o = v[j];
                 if (j == i || o.hp <= 0) continue;
                 float overlap = std::min(b.x + b.w / 2, o.x + o.w / 2) - std::max(b.x - b.w / 2, o.x - o.w / 2);
                 float top = o.y + o.h;
                 if (overlap > 3 && top <= b.y + 0.5f && top > support) { support = top; under = int(j); }
             }
-            if (b.y <= support + 0.01f) { b.y = std::max(b.y, support); continue; }
+            if (under >= 0)
+                for (size_t j = 0; j < v.size(); ++j) {
+                    const Block& o = v[j];
+                    if (j == i || o.hp <= 0 || std::fabs(o.y + o.h - support) > 0.6f) continue;
+                    if (std::min(b.x + b.w / 2, o.x + o.w / 2) - std::max(b.x - b.w / 2, o.x - o.w / 2) <= 3) continue;
+                    spanL = std::min(spanL, o.x - o.w / 2); spanR = std::max(spanR, o.x + o.w / 2);
+                }
+            if (b.y <= support + 0.01f && b.vy >= 0) {                 // resting
+                b.y = support; b.vy = 0;
+                b.vx *= under < 0 ? 0.75f : 0.85f;                     // friction
+                if (std::fabs(b.vx) < 0.03f) b.vx = 0;
+                if (under >= 0 && b.x < spanL) b.vx -= 0.25f;          // its middle hangs over the edge: it tips off
+                else if (under >= 0 && b.x > spanR) b.vx += 0.25f;
+                continue;
+            }
             b.vy += 0.3f;
             b.y -= b.vy;
             if (b.y > support) continue;
-            float v = b.vy;
-            b.y = support; b.vy = 0;
-            static const float weight[4] = {30, 60, 160, 10};
-            float dmg = v > 2 ? (v - 2) * 110 : 0;
+            float fall = b.vy;
+            b.y = support; b.vy = 0; b.vx *= 0.6f;
+            float dmg = fall > 2 ? (fall - 2) * 110 : 0;
             HurtBlock(b, dmg);
             if (under >= 0) {
-                Block& o = t.blocks[under];
-                HurtBlock(o, dmg / 2 + (o.mat == PigBody ? weight[b.mat] * v / 3 : 0));
+                Block& o = v[under];
+                HurtBlock(o, dmg / 2 + (o.mat == PigBody ? Weight(b) * fall / 3 : 0));
             }
-            if (v > 2) assets::Snd(b.mat == Stone ? L"rock collision a1.wav" : b.mat == Wood ? L"wood collision a1.wav"
-                                                  : L"ice light collision a1.wav").Play();
+            if (fall > 2) assets::Snd(b.mat == Stone ? L"rock collision a1.wav" : b.mat == Wood ? L"wood collision a1.wav"
+                                      : b.mat == PigBody ? L"piglette damage a1.wav" : L"ice light collision a1.wav").Play();
+        }
+        // Anything shoved off the lawn is gone.
+        for (auto& b : v) {
+            float x = t.cx + b.x;
+            if (b.hp > 0 && (x < kLawnLeft - 20 || x > 830)) b.hp = 0;
         }
     }
     SweepTowers("crushed");
@@ -441,11 +652,150 @@ void ShieldZombies() {
             if (!first || px < BlockLeft(t, *first) || px > BlockRight(t, *first) + 10) continue;
             if (type == 1) IceBlock(*first);                              // snow peas freeze wood into ice
             HurtBlock(*first, float(dmg));
+            Nudge(*first, 0.06f);
             pvz::wr<uint8_t>(p + pvz::Proj_Dead, 1);
             break;
         }
     }
     SweepTowers("plant shot");
+}
+
+// Straight shooters (and winter-melon pults) aim only at zombies, so with no zombie in the lane they'd stand idle in
+// front of a structure. The game asks Plant::FindTargetZombie whether a plant has anything to
+// shoot at; when it says no, the mod says yes for a straight shooter with a structure block in
+// its shots' path, and the shots then hit the structure (ShieldZombies). These calls only test
+// the answer for null, so it points at a blank stand-in zombie.
+bool IsStraightShooter(int seed) {
+    switch (seed) {
+    case 0:  case 5:  case 7:  case 8:  case 13:   // peashooter, snow pea, repeater, puff-shroom, scaredy-shroom
+    case 18: case 24: case 28: case 40:            // threepeater, sea-shroom, split pea, gatling pea
+    case 44:                                       // winter melon (its melon is aimed in WatchWinterMelons)
+        return true;
+    }
+    return false;
+}
+
+uint8_t g_standIn[0x200];
+
+bool ZombieInRow(int row, float fromX);
+uintptr_t StructureTarget(uintptr_t plant, int row, int weapon) {
+    if (weapon != 0 || !S.board || S.towers.empty() || !S.running) return 0;
+    if (pvz::rd<uintptr_t>(plant + pvz::Plant_Board) != S.board) return 0;
+    int seed = pvz::rd<int>(plant + pvz::Plant_Type);
+    if (!IsStraightShooter(seed)) return 0;
+    float x = float(pvz::rd<int>(plant + pvz::Plant_X));
+    float reach = (seed == 8 || seed == 24) ? x + 290 : kLawnRight;   // puff- and sea-shrooms shoot short
+    if (seed == 44 && ZombieInRow(row, x)) return 0;                  // a lobbed melon would go to that zombie
+    for (auto& t : S.towers) {
+        if (t.row != row) continue;
+        for (auto& b : t.blocks) {
+            if (b.hp <= 0 || b.y >= kPeaBandLow || b.y + b.h <= kPeaBandHigh) continue;   // over the shots
+            if (BlockRight(t, b) > x + 40 && BlockLeft(t, b) < reach) {
+                static uintptr_t lastPlant = 0;
+                if (plant != lastPlant) { lastPlant = plant; Log("plant (type %d) row %d x %d shoots at a structure", seed, row, int(x)); }
+                pvz::wr<int>(uintptr_t(g_standIn) + pvz::Zombie_Row, row);
+                pvz::wr<float>(uintptr_t(g_standIn) + pvz::Zombie_PosX, BlockLeft(t, b));
+                pvz::wr<int>(uintptr_t(g_standIn) + pvz::Zombie_BodyHp, 1);
+                return uintptr_t(g_standIn);
+            }
+        }
+    }
+    return 0;
+}
+
+void AimPlantsAtStructures() {
+    int done = 0;
+    for (uintptr_t site : pvz::kFindTargetCalls) {
+        auto* p = reinterpret_cast<uint8_t*>(site);
+        int32_t rel; memcpy(&rel, p + 1, 4);
+        if (p[0] != 0xE8 || site + 5 + rel != pvz::kFindTargetZombie) { Log("plant aim: unexpected code at %08x, left alone", unsigned(site)); continue; }
+        int32_t to = int32_t(uintptr_t(&birdmod_FindTargetStub) - (site + 5));
+        DWORD old;
+        if (!VirtualProtect(p + 1, 4, PAGE_EXECUTE_READWRITE, &old)) continue;
+        memcpy(p + 1, &to, 4);
+        VirtualProtect(p + 1, 4, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), p, 5);
+        ++done;
+    }
+    Log("plant aim: %d of 4 shooter checks also see structures", done);
+}
+
+// Winter melons treat structures the way snow peas do. A winter-melon pult with a structure in
+// its lane and no zombie fires anyway (StructureTarget); the game lobs that melon at a default
+// spot, so the mod bends its flight to land on the structure. Wherever a winter melon comes
+// down, its icy splash turns the wood and stone near it into ice and chips at it.
+constexpr int kProjWinterMelon = 5;
+constexpr uint32_t Proj_VelX = 0x3C, Proj_VelZ = 0x44;      // lobbed: velZ starts at -7, +0.115 a tick, 120 ticks up and down
+bool ZombieInRow(int row, float fromX) {
+    bool any = false;
+    ForEachZombie(S.board, [&](uintptr_t, int r, float cx) { if (r == row && cx > fromX) any = true; });
+    return any;
+}
+const Block* FirstLowBlock(const Tower& t) {
+    const Block* first = nullptr;
+    for (auto& b : t.blocks)
+        if (b.hp > 0 && b.y < kPeaBandLow && b.y + b.h > kPeaBandHigh && (!first || BlockLeft(t, b) < BlockLeft(t, *first))) first = &b;
+    return first;
+}
+// A winter melon only affects the structure in the lawn square it lands in.
+void MelonSplash(float x, int row) {
+    int col = int((x - kLawnLeft) / kCell);
+    float left = kLawnLeft + col * kCell, right = left + kCell;
+    int n = 0;
+    for (auto& t : S.towers) {
+        if (t.row != row) continue;
+        for (auto& b : t.blocks) {
+            if (b.hp <= 0 || BlockRight(t, b) <= left || BlockLeft(t, b) >= right) continue;
+            IceBlock(b);
+            HurtBlock(b, 60.f);
+            ++n;
+        }
+    }
+    if (n) {
+        S.fx.push_back({Fx::Frost, x, GroundY(row) - 30, 0, 30, int(kCell / 2)});
+        Log("winter melon splash: row %d square %d froze %d block(s)", row, col + 1, n);
+    }
+    SweepTowers("winter melon");
+}
+void WatchWinterMelons() {
+    auto& arr = *reinterpret_cast<pvz::DataArray*>(S.board + pvz::Board_Projectiles);
+    if (!S.projOk || !arr.block) return;
+    for (auto& [id, m] : S.melons) m.seen = false;
+    for (uint32_t i = 0; i < arr.maxUsed && i < arr.maxSize; ++i) {
+        uintptr_t p = uintptr_t(arr.block) + i * pvz::Proj_Stride;
+        uint32_t id = pvz::rd<uint32_t>(p + pvz::Proj_Id);
+        if (!(id & 0xFFFF0000u) || pvz::rd<uint8_t>(p + pvz::Proj_Dead)) continue;
+        if (pvz::rd<int>(p + pvz::Proj_Type) != kProjWinterMelon || pvz::rd<int>(p + pvz::Proj_Motion) != 1) continue;
+        int row = pvz::rd<int>(p + pvz::Proj_Row);
+        float x = pvz::rd<float>(p + pvz::Proj_PosX);
+        auto it = S.melons.find(id);
+        if (it == S.melons.end()) {
+            // A new melon. With no zombie ahead in its lane it was fired at a structure: aim it there.
+            float vz = pvz::rd<float>(p + Proj_VelZ), vx = pvz::rd<float>(p + Proj_VelX);
+            float left = std::clamp(120.f - (vz + 7.f) / 0.115f, 1.f, 120.f);
+            if (!S.towers.empty() && !ZombieInRow(row, x)) {
+                const Tower* best = nullptr; const Block* bb = nullptr;
+                for (auto& t : S.towers) {
+                    if (t.row != row) continue;
+                    const Block* b = FirstLowBlock(t);
+                    if (b && BlockRight(t, *b) > x && (!best || BlockLeft(t, *b) < BlockLeft(*best, *bb))) { best = &t; bb = b; }
+                }
+                if (best) {
+                    float target = best->cx + bb->x - 30;              // where the melon's picture lands centred on the block
+                    float land = x + vx * left;
+                    pvz::wr<float>(p + Proj_VelX, vx + (target - land) / left);
+                    Log("winter melon aimed at a structure: row %d, x %d -> %d", row, int(land), int(target));
+                }
+            }
+            it = S.melons.emplace(id, Melon{x, row, true}).first;
+        }
+        it->second.x = x; it->second.row = row; it->second.seen = true;
+    }
+    for (auto it = S.melons.begin(); it != S.melons.end();) {
+        if (it->second.seen) { ++it; continue; }
+        MelonSplash(it->second.x + 30, it->second.row);   // it came down (on a zombie or the ground)
+        it = S.melons.erase(it);
+    }
 }
 
 // Ice-shroom: the game gives every zombie a fresh freeze timer at once. When the highest
@@ -508,10 +858,10 @@ void Land(const Shot& s) {
         S.fx.push_back({Fx::Ring, s.x1, cy, 0, 20, kSplitRadius});
         break;
     case DashRight:
-        S.dashes.push_back({s.kind, s.x1, cy, 850, row, +1, {}});
+        S.dashes.push_back({s.kind, s.x1, cy, 850, row, +1, {}, kDashPower});
         break;
     case Boomerang:
-        S.dashes.push_back({s.kind, s.x1, cy, kLawnLeft - 30, row, -1, {}});
+        S.dashes.push_back({s.kind, s.x1, cy, kLawnLeft - 30, row, -1, {}, kDashPower});
         break;
     case Explode:
         hits = HitArea(row, 1, s.x1, kCell * 1.5f, d.damage, s.kind);
@@ -520,7 +870,7 @@ void Land(const Shot& s) {
         break;
     case ColumnCrush:
         hits = HitArea(row, 9, s.x1, kCell / 2.f + 5, d.damage, s.kind);
-        for (int r = 0; r < RowCount(b); ++r) SmashFromAbove(s.kind, r, s.x1, kCell / 2.f + 5, d.damage);
+        SmashFromAbove(s.kind, row, s.x1, kCell / 2.f + 5, d.damage);   // structures: only the square he lands on
         for (int r = 0; r < RowCount(b); ++r) S.fx.push_back({Fx::Ring, s.x1, RowCenterY(b, r), 0, 30, 45});
         break;
     case PuffPush:
@@ -576,7 +926,7 @@ void Tick() {
             }
         });
         bool done = it->dir > 0 ? it->x > it->endX : it->x < it->endX;
-        if (DashIntoTowers(it->kind, it->row, it->x)) done = true;
+        if (DashIntoTowers(*it)) done = true;
         SweepTowers(kBirds[it->kind].name);
         if (done) it = S.dashes.erase(it); else ++it;
     }
@@ -631,6 +981,7 @@ void Update() {
     if (S.running && S.levelChecked) {
         if (!S.towersMade && (BirdCount() || S.conveyor)) BuildTowers();
         ShieldZombies();
+        WatchWinterMelons();
         WatchIceShroom();
     }
 }
@@ -819,6 +1170,15 @@ void DrawEffects(HDC dc) {
             Blit(dc, fl.ok() ? fl : assets::Get(kBirds[f.bird].idle), f.x + 220 * p, f.y - 320 * p, 0.8f, BYTE(255 * (1 - p)));
             break;
         }
+        case Fx::Thud: {     // Chuck / Hal stopped by a block: knocked back, tumbling down
+            const Sprite& sp = assets::Get(kBirds[f.bird].special);
+            float bx = f.x - f.value * 30 * p, by = f.y - 30 * std::sin(3.14159f * p) + 20 * p;
+            Blit(dc, sp.ok() ? sp : assets::Get(kBirds[f.bird].idle), bx, by, 0.9f, BYTE(255 * (1 - p)));
+            break;
+        }
+        case Fx::Frost:      // a winter melon's icy splash on a structure
+            Ring(dc, f.x, f.y, f.value * (0.3f + 0.7f * p), RGB(150, 220, 255), std::max(1, int(6 * (1 - p))));
+            break;
         case Fx::Bubble:     // Stella carrying a pig away
             Ring(dc, f.x, f.y - 60 * p, 22, RGB(255, 150, 210), 3);
             break;
@@ -1129,8 +1489,27 @@ const AlmanacText kAlmanac[kBirdCount] = {
      "Matilda lets go of one egg and is gone before it lands. It's the only egg on the lawn nobody wants to protect."},
 };
 
-struct AlmanacState { bool birdsPage = false; int selected = 0; int lastIndex = -1; } A;
-const RECT kViewBirdsPanel{250, 432, 550, 556}, kViewBirdsButton{322, 504, 478, 546};
+// Pig Almanac text, written for this mod.
+struct PigText { const char* tagline; const char* found; const char* blurb; };
+const PigText kPigText[kPigKinds] = {
+    {"The smallest of the bunch.", "Every world.",
+     "Small Pig fits in any hut and squeals at any bird. One good hit is all it takes, and he knows it."},
+    {"A bit rounder, a bit braver.", "Every world.",
+     "Medium Pig has eaten a few more eggs than his little cousin and wants you to know it. He takes a couple of knocks before he gives up."},
+    {"Big, slow and proud of it.", "From the Day world on.",
+     "Big Pig needs a bigger hut, and the blocks around him are built wider and taller to fit. Worth a good chunk of sun once he's down."},
+    {"Wears a helmet. Feels unstoppable.", "From the Day world on.",
+     "Helmet Pig found a hard hat and never took it off. Peas bounce, birds dent it, and he still looks smug."},
+    {"Bossy, tough and full of himself.", "From the Pool world on, mostly late.",
+     "Mustache Pig is in charge of the building site and has a mustache to prove it. He takes a real beating before he pops."},
+    {"Royalty, and very well protected.", "Only in the fight with Dr. Zomboss.",
+     "King Pig sits in a stone fortress right next to the giant robot. He's far too heavy for Stella's bubbles to lift. Knock him out for a huge pile of sun."},
+};
+
+// page: 0 = the game's own Almanac, 1 = Birds, 2 = Pigs.
+struct AlmanacState { int page = 0; int selected = 0; int pig = 0; int lastIndex = -1; } A;
+const RECT kViewBirdsPanel{130, 432, 390, 556}, kViewBirdsButton{182, 504, 338, 546};
+const RECT kViewPigsPanel{410, 432, 670, 556}, kViewPigsButton{462, 504, 618, 546};
 const RECT kBirdsIndexButton{32, 567, 196, 593}, kAlmanacClose{676, 567, 765, 593};
 
 bool Readable(uintptr_t p) {
@@ -1180,6 +1559,11 @@ void DrawViewBirdsPanel(HDC dc) {
     BlitFit(dc, assets::Get(kBirds[Red].idle), pic);
     DrawPanelBox(dc, kViewBirdsButton, RGB(120, 70, 30), RGB(60, 30, 10));
     DrawLabel(dc, kViewBirdsButton, "View Birds", 18, RGB(240, 200, 80));
+    DrawPanelBox(dc, kViewPigsPanel, RGB(90, 150, 70), RGB(40, 80, 30));
+    RECT pig{kViewPigsPanel.left + 100, kViewPigsPanel.top + 8, kViewPigsPanel.right - 100, kViewPigsPanel.top + 68};
+    BlitFit(dc, PigSprite(PigSmall, 1), pig);
+    DrawPanelBox(dc, kViewPigsButton, RGB(120, 70, 30), RGB(60, 30, 10));
+    DrawLabel(dc, kViewPigsButton, "View Pigs", 18, RGB(240, 200, 80));
 }
 
 void DrawBirdsPage(HDC dc) {
@@ -1241,27 +1625,99 @@ void DrawBirdsPage(HDC dc) {
     DrawLabel(dc, kBirdsIndexButton, "Almanac Index", 15, RGB(240, 200, 80));
 }
 
+RECT PigsPageTile(int pig) {
+    int x = 40 + (pig % 2) * 112, y = 110 + (pig / 2) * 112;
+    return {x, y, x + 100, y + 100};
+}
+
+void DrawPigsPage(HDC dc) {
+    HBRUSH paper = CreateSolidBrush(RGB(214, 236, 170));
+    RECT parts[] = {{0, 0, 800, kAlmanacClose.top}, {0, kAlmanacClose.top, kAlmanacClose.left, 600},
+                    {kAlmanacClose.right, kAlmanacClose.top, 800, 600}, {kAlmanacClose.left, kAlmanacClose.bottom, kAlmanacClose.right, 600}};
+    for (RECT& r : parts) FillRect(dc, &r, paper);
+    DeleteObject(paper);
+
+    RECT title{180, 18, 620, 70};
+    DrawPanelBox(dc, title, RGB(90, 150, 70), RGB(40, 80, 30));
+    DrawLabel(dc, title, "Pig Almanac", 30, RGB(255, 255, 255));
+
+    for (int i = 0; i < kPigKinds; ++i) {
+        RECT r = PigsPageTile(i);
+        DrawPanelBox(dc, r, i == A.pig ? RGB(255, 240, 170) : RGB(190, 215, 140), i == A.pig ? RGB(255, 200, 40) : RGB(90, 120, 60));
+        RECT in{r.left + 10, r.top + 8, r.right - 10, r.bottom - 22};
+        BlitFit(dc, PigSprite(i, 1), in);
+        RECT lbl{r.left, r.bottom - 22, r.right, r.bottom - 4};
+        DrawLabel(dc, lbl, kPigs[i].name, 12, RGB(50, 40, 20));
+    }
+
+    const PigDef& d = kPigs[A.pig];
+    const PigText& t = kPigText[A.pig];
+    RECT card{290, 96, 770, 550};
+    DrawPanelBox(dc, card, RGB(50, 60, 35), RGB(25, 30, 15));
+    RECT pic{310, 116, 470, 276};
+    DrawPanelBox(dc, pic, RGB(150, 200, 230), RGB(80, 120, 150));
+    RECT picIn{pic.left + 12, pic.top + 12, pic.right - 12, pic.bottom - 12};
+    BlitFit(dc, PigSprite(A.pig, 1), picIn);
+
+    RECT name{490, 116, 760, 150};
+    DrawLabel(dc, name, d.name, 28, RGB(170, 230, 90), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    RECT tag{490, 152, 760, 190};
+    DrawLabel(dc, tag, t.tagline, 15, RGB(255, 255, 255), DT_LEFT | DT_WORDBREAK);
+
+    char tough[48], sun[48], found[120];
+    const char* feel = d.hp < 200 ? "flimsy" : d.hp < 300 ? "light" : d.hp < 500 ? "sturdy" : d.hp < 1000 ? "tough" : "very tough";
+    wsprintfA(tough, "Toughness: %d (%s)", d.hp, feel);
+    wsprintfA(sun, "Popping him gives: %d sun", d.sun);
+    wsprintfA(found, "Found: %s", t.found);
+    const char* stats[] = {tough, sun, found};
+    for (int i = 0; i < 3; ++i) {
+        RECT r{490, 200 + i * 22, 760, 222 + i * 22};
+        DrawLabel(dc, r, stats[i], 14, RGB(230, 225, 190), DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+    RECT blurb{310, 300, 750, 530};
+    DrawLabel(dc, blurb, t.blurb, 17, RGB(245, 255, 225), DT_LEFT | DT_WORDBREAK);
+
+    DrawPanelBox(dc, kBirdsIndexButton, RGB(120, 70, 30), RGB(60, 30, 10));
+    DrawLabel(dc, kBirdsIndexButton, "Almanac Index", 15, RGB(240, 200, 80));
+}
+
 void DrawAlmanac(HDC dc, uintptr_t alm) {
-    if (A.birdsPage) DrawBirdsPage(dc);
+    if (A.page == 1) DrawBirdsPage(dc);
+    else if (A.page == 2) DrawPigsPage(dc);
     else if (AlmanacOnIndex(alm)) DrawViewBirdsPanel(dc);
 }
 
 bool HandleAlmanacMouse(uintptr_t alm, UINT msg, POINT p) {
-    if (!A.birdsPage) {
-        if (!AlmanacOnIndex(alm) || !PtInRect(&kViewBirdsPanel, p)) return false;
+    if (A.page == 0) {
+        if (!AlmanacOnIndex(alm) || (!PtInRect(&kViewBirdsPanel, p) && !PtInRect(&kViewPigsPanel, p))) return false;
+        if (msg == WM_LBUTTONDOWN && PtInRect(&kViewPigsButton, p)) {
+            A.page = 2;
+            assets::Snd(L"piglette oink a5.wav").Play();
+            Log("almanac: pigs page");
+        }
         if (msg == WM_LBUTTONDOWN && PtInRect(&kViewBirdsButton, p)) {
-            A.birdsPage = true;
+            A.page = 1;
             Log("almanac: birds page");
         }
         return msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP;
     }
     if (PtInRect(&kAlmanacClose, p)) return false;        // the game's own Close button
+    if (A.page == 2) {
+        if (msg == WM_LBUTTONDOWN) {
+            for (int i = 0; i < kPigKinds; ++i) {
+                RECT r = PigsPageTile(i);
+                if (PtInRect(&r, p)) { A.pig = i; assets::Snd(L"piglette oink a1.wav").Play(); }
+            }
+            if (PtInRect(&kBirdsIndexButton, p)) A.page = 0;
+        }
+        return true;
+    }
     if (msg == WM_LBUTTONDOWN) {
         for (int i = 0; i < kBirdCount; ++i) {
             RECT r = BirdsPagePacket(i);
             if (PtInRect(&r, p)) { A.selected = i; assets::Snd(kBirds[i].selectSnd).Play(); }
         }
-        if (PtInRect(&kBirdsIndexButton, p)) A.birdsPage = false;
+        if (PtInRect(&kBirdsIndexButton, p)) A.page = 0;
     }
     return true;   // keep the Almanac underneath from reacting while the Birds page is up
 }
@@ -1396,7 +1852,7 @@ void RenderInto(void* surf) {
     LearnMouseMap();
     // While the Almanac is open (main menu or plant select) only Almanac pages are drawn.
     uintptr_t alm = FindAlmanac();
-    if (!alm) A.birdsPage = false;
+    if (!alm) A.page = 0;
     int menu = (S.board || alm) ? 0 : MenuScreen();
     if (S.board || alm || menu) {
         HDC dc;
@@ -1752,6 +2208,7 @@ DWORD WINAPI Init(LPVOID) {
     if (GetLastError() == ERROR_ALREADY_EXISTS) { Log("another copy is already running; this one stays off"); return 0; }
     Log("---- birdmod init, build ok");
     StopDavePicking();
+    AimPlantsAtStructures();
     srand(GetTickCount());   // which belt arrivals become birds
     std::wstring err;
     bool packetOk = assets::LoadPacketArt(err);
@@ -1777,6 +2234,31 @@ DWORD WINAPI Init(LPVOID) {
 }
 
 } // namespace
+
+// Stands in for Plant::FindTargetZombie at the shooter calls (see AimPlantsAtStructures):
+// asks the game first, and only when it finds no zombie asks the mod about structures.
+extern "C" uintptr_t __cdecl birdmod_StructureTarget(uintptr_t plant, int row, int weapon) {
+    return StructureTarget(plant, row, weapon);
+}
+asm(R"(
+    .text
+    .globl _birdmod_FindTargetStub
+_birdmod_FindTargetStub:
+    pushl %ecx                  # weapon; stack: weapon, ret, plant, row
+    pushl 12(%esp)              # row
+    pushl 12(%esp)              # plant
+    movl $0x46DA60, %eax        # Plant::FindTargetZombie, ecx still the weapon
+    calll *%eax                 # pops its two arguments
+    popl %ecx
+    testl %eax, %eax
+    jnz 1f
+    pushl %ecx                  # weapon
+    pushl 12(%esp)              # row
+    pushl 12(%esp)              # plant
+    calll _birdmod_StructureTarget
+    addl $12, %esp
+1:  ret $8
+)");
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {

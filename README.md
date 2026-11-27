@@ -60,17 +60,67 @@ Zombies killed by a bird are removed at once and drop coins like any other kill,
 can take the last zombie of a level.
 
 **Pig structures:** Adventure levels where you have birds get 2-4 Angry Birds structures
-(glass, wood and stone blocks, often with a pig inside) near the zombies' end of the lawn.
+(glass, wood and stone blocks with pigs inside), placed at random anywhere from the fourth
+column to the zombies' end of the lawn, so every level has its own layout. The three columns
+by your house always stay clear. A structure can stretch across two or three lawn squares and
+hold a pig in each of its huts. Blocks and pigs are drawn close to the birds' own size, and a
+hut is built as big as the pig inside it.
 Early worlds build them mostly from glass and wood; later worlds from wood and stone, taller.
+- **Physics:** a hit shoves what it doesn't break. Blocks and pigs slide, bump their neighbours,
+  tip off the edge when what holds them up is knocked away, and fall. Landings and hard bumps
+  hurt both blocks, and a pig under a heavy block pops. Bomb and Matilda's egg throw blocks
+  away from the blast, and Bubbles shoves them back. Anything pushed off the lawn is gone.
 - Zombies walk through them, but a zombie behind one is covered: peas, spikes and puffs hit the
   structure and chip at it. Lobbed shots (cabbages, kernels, melons) fly over.
+- Straight shooters (peashooters, snow peas, repeaters, threepeaters, split peas, gatling peas,
+  puff-, sea- and scaredy-shrooms) and winter-melon pults fire at a structure in their lane even
+  when no zombie is there.
 - Birds smash them the Angry Birds way: Blues shatter glass, Chuck splits wood, Bomb cracks
-  stone, Terence flattens anything. Chuck and Hal stop at a block they can't break.
+  stone, Terence flattens anything in the square he lands on.
+- Chuck and Hal crash into structures like in Angry Birds: every block they break slows them,
+  stone stops them dead, and a stopped bird bounces back and tumbles down.
 - Blocks fall when what's under them breaks, and a falling block hurts what it lands on.
+- Plants only hit the part of a structure in the square their shot reaches: a pea hits the first
+  block in its way, and a winter melon freezes and chips only the blocks in the square it lands in.
 - Snow peas turn wooden blocks to ice. An Ice-shroom turns every block on the lawn to ice.
-- Popping a pig gives 25 sun. Stella's bubbles lift pigs away.
+- Stella's bubbles lift pigs away (all but the King Pig, who is too heavy).
+
+**The pigs:** open the Almanac and click **View Pigs** to see each one.
+| Pig          | Toughness | Sun when popped | Where |
+|--------------|-----------|-----------------|-------|
+| Small Pig    | 150       | 25  | Every world |
+| Medium Pig   | 260       | 25  | Every world |
+| Big Pig      | 420       | 50  | From the Day world on, more later |
+| Helmet Pig   | 650       | 50  | From the Day world on, more later |
+| Mustache Pig | 900       | 75  | From the Pool world on, mostly late |
+| King Pig     | 2400      | 200 | Only in the Dr. Zomboss fight, in a stone hall next to the robot |
 
 ## Changes
+**v2.2**
+- The whole pig family: small, medium and big pigs, Helmet Pig and Mustache Pig turn up as the
+  worlds go on, and the King Pig waits in a stone hall in the Dr. Zomboss fight.
+- Pig Almanac: a View Pigs panel next to View Birds on the Almanac's index page.
+- Blocks and pigs are bigger, close to the birds' own size; huts are built to fit their pig.
+- Structures can stretch across two or three lawn squares, with a pig in each hut.
+- Physics: blocks and pigs get shoved, slide, tip over edges and fall onto each other.
+- Plants only damage the part of a structure in the square they hit (winter melons no longer
+  splash the neighbouring squares and rows).
+
+**v2.1.5**
+- Structures can turn up anywhere from the fourth column to the far edge of the lawn, in any
+  row (more than one to a row when they're spaced apart), so every level has its own layout.
+  The three columns closest to the house stay clear.
+
+**v2.1**
+- Plants shoot at structures: a straight shooter or winter-melon pult with a block or pig in its
+  lane now fires at it even when there are no zombies in that lane, instead of standing idle.
+- Chuck and Hal are stopped by structures the Angry Birds way: breaking blocks uses up their
+  push, stone stops them dead, and they bounce back off the block that stops them.
+- Winter melons act like snow peas on structures: their splash turns wood and stone to ice and
+  chips at it.
+- Terence only smashes the structure in the square he lands on (he still crushes every zombie
+  in his column).
+
 **v2.0**
 - Pig structures (above).
 - New bird: Matilda drops an exploding egg and flies off.
