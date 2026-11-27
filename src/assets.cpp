@@ -106,6 +106,7 @@ const char* kSprites[] = {
     "BIRD_BIG_BROTHER", "BIRD_BIG_BROTHER_YELL",
     "BIRD_PUFFER_1", "BIRD_PUFFER_2",
     "BIRD_PINK", "BIRD_PINK_RELEASE",
+    "BIRD_GREEN", "BIRD_GREEN_FLYING", "DROPPABLE_EGG",   // Matilda and her egg
 };
 const wchar_t* kSounds[] = {
     L"slingshot streched.wav",
@@ -119,6 +120,7 @@ const wchar_t* kSounds[] = {
     L"wood damage a1.wav", L"wood destroyed a1.wav", L"wood collision a1.wav",
     L"rock damage a1.wav", L"rock destroyed a1.wav", L"rock collision a1.wav",
     L"piglette damage a1.wav", L"piglette destroyed.wav", L"piglette oink a1.wav",
+    L"special egg explosion.wav", L"bird pushing egg out.wav",
 };
 
 // Pig structure art: BLOCK_<LIGHT|WOOD|ROCK>_<damage 1-4>_<shape 2-6> and the small pig.

@@ -53,6 +53,7 @@ up to two at a time. Belt birds are free, like belt plants.
 | Terence | 500 | 50 s     | Crushes the whole column he lands in |
 | Bubbles | 100 | 15 s     | Puffs up and shoves zombies in a 3×3 back about 1.5 tiles |
 | Stella  | 125 | 20 s     | Traps zombies in a 3×3 in bubbles for 5 seconds |
+| Matilda | 150 | 20 s     | Drops an exploding egg: 1½ squares each way along her lane, plus the squares above and below |
 
 Birds with long recharges start each level half-charged, like Cherry Bomb.
 Zombies killed by a bird are removed at once and drop coins like any other kill, and a bird
@@ -70,8 +71,9 @@ Early worlds build them mostly from glass and wood; later worlds from wood and s
 - Popping a pig gives 25 sun. Stella's bubbles lift pigs away.
 
 ## Changes
-**v2.0** (in progress)
+**v2.0**
 - Pig structures (above).
+- New bird: Matilda drops an exploding egg and flies off.
 - The View Birds button no longer shows on the Almanac's Plants and Zombies pages.
 
 **v1.3.2**

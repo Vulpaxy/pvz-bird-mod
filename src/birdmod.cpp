@@ -21,8 +21,8 @@ namespace {
 
 // ---------- birds ----------
 // Sprites named here are loaded from the player's Angry Birds install (see assets.cpp).
-enum BirdKind { Red, Chuck, Bomb, Blues, Hal, Terence, Bubbles, Stella, kBirdCount };
-enum Effect { Impact, DashRight, Explode, Split3, Boomerang, ColumnCrush, PuffPush, BubbleTrap };
+enum BirdKind { Red, Chuck, Bomb, Blues, Hal, Terence, Bubbles, Stella, Matilda, kBirdCount };
+enum Effect { Impact, DashRight, Explode, Split3, Boomerang, ColumnCrush, PuffPush, BubbleTrap, EggDrop };
 struct BirdDef {
     const char* name; const char* idle; const char* flying; const char* special;
     int cost; int rechargeTicks; Effect effect; int damage;
@@ -45,6 +45,9 @@ const BirdDef kBirds[kBirdCount] = {
      L"Globe_Bird_Special_Activation_1.wav", L"bird 02 flying.wav", L"Globe_Bird_Special_Activation_2.wav"},
     {"Stella",  "BIRD_PINK",        "BIRD_PINK",          "BIRD_PINK_RELEASE",     125, 2000, BubbleTrap,    0,
      L"Globe_Bird_Special_Activation_3.wav", L"bird 05 flying.wav", L"special egg.wav"},
+    // Matilda's art is stored as BIRD_GREEN in Angry Birds for PC.
+    {"Matilda", "BIRD_GREEN",       "BIRD_GREEN_FLYING",  "DROPPABLE_EGG",         150, 2000, EggDrop,     900,
+     L"bird 02 select.wav", L"bird 02 flying.wav", L"special egg explosion.wav"},
 };
 constexpr int kImpactRadius = 60, kSplitRadius = 50, kDashSpeed = 9, kCell = 80;
 constexpr int kPushDistance = 120, kTrapTicks = 500;
@@ -55,7 +58,7 @@ constexpr float kLawnLeft = 80, kLawnRight = 800, kLawnTop = 80;
 
 struct Shot { BirdKind kind; float x0, y0, x1, y1; int t, dur; bool primary; };
 struct Dash { BirdKind kind; float x, y, endX; int row, dir; std::vector<uintptr_t> hit; };
-struct Fx { enum Kind { Ring, Blast, Sprite, Number, Bubble, Gain } kind; float x, y; int t, life, value; BirdKind bird; };
+struct Fx { enum Kind { Ring, Blast, Sprite, Number, Bubble, Gain, Away } kind; float x, y; int t, life, value; BirdKind bird; };
 struct Trap { uintptr_t zombie; float x; int ticks; };
 
 // Pig structures (see "pig structures" below). Block x is the centre relative to the tower,
@@ -181,6 +184,7 @@ const float kMult[kBirdCount][4] = {
     {1.5f, 1.5f, 1.5f, 1},   // Terence
     {1.0f, 1.0f, 0.6f, 1},   // Bubbles
     {0.0f, 0.0f, 0.0f, 0},   // Stella: lifts pigs away in bubbles instead
+    {1.5f, 1.5f, 1.2f, 1},   // Matilda's egg
 };
 
 float GroundY(int row) { return RowCenterY(S.board, row) + RowHeight(S.board) * 0.38f; }
@@ -530,6 +534,20 @@ void Land(const Shot& s) {
         SmashArea(s.kind, row, 1, s.x1, kCell * 1.5f, 350);
         S.fx.push_back({Fx::Ring, s.x1, cy, 0, 30, int(kCell * 1.6f)});
         break;
+    case EggDrop:
+        // Matilda drops her egg on the spot and shoots off up and away. The egg blasts along
+        // her lane (a square and a half each way) and the squares just above and below.
+        assets::Snd(L"bird pushing egg out.wav").Play();
+        ForEachZombie(b, [&](uintptr_t z, int r, float cx) {
+            float dx = std::fabs(cx - s.x1);
+            if ((r == row && dx <= kCell * 1.5f) || (std::abs(r - row) == 1 && dx <= kCell / 2.f)) { Damage(z, d.damage, s.kind); ++hits; }
+        });
+        SmashArea(s.kind, row, 0, s.x1, kCell * 1.5f, d.damage);
+        for (int r : {row - 1, row + 1}) SmashArea(s.kind, r, 0, s.x1, kCell / 2.f, d.damage);
+        S.fx.push_back({Fx::Blast, s.x1, cy, 0, 40, int(kCell * 1.3f)});
+        for (int r : {row - 1, row + 1}) if (r >= 0 && r < RowCount(b)) S.fx.push_back({Fx::Ring, s.x1, RowCenterY(b, r), 0, 30, 40});
+        S.fx.push_back({Fx::Away, s.x1, cy - 40, 0, 50, 0, s.kind});
+        break;
     case BubbleTrap:
         BubblePigs(row, s.x1, kCell * 1.5f);
         ForEachZombie(b, [&](uintptr_t z, int r, float cx) {
@@ -794,6 +812,11 @@ void DrawEffects(HDC dc) {
             int y = int(f.y - 40 * p);
             SetTextColor(dc, RGB(90, 60, 0)); TextOutA(dc, int(f.x) + 1, y + 1, txt, lstrlenA(txt));
             SetTextColor(dc, RGB(255, 230, 60)); TextOutA(dc, int(f.x), y, txt, lstrlenA(txt));
+            break;
+        }
+        case Fx::Away: {     // Matilda shooting off after dropping her egg
+            const Sprite& fl = assets::Get(kBirds[f.bird].flying);
+            Blit(dc, fl.ok() ? fl : assets::Get(kBirds[f.bird].idle), f.x + 220 * p, f.y - 320 * p, 0.8f, BYTE(255 * (1 - p)));
             break;
         }
         case Fx::Bubble:     // Stella carrying a pig away
@@ -1102,6 +1125,8 @@ const AlmanacText kAlmanac[kBirdCount] = {
      "Bubbles is small until he isn't. Zombies nearby get a light bruise and a long walk back to where they were."},
     {"Traps zombies in bubbles.", "3x3 squares, for 5 seconds.",
      "Stella seals zombies in bubbles for a few seconds. They can't take a step until it pops, which buys your plants some quiet."},
+    {"Drops an exploding egg.", "A square and a half each way along her lane, plus the squares above and below.",
+     "Matilda lets go of one egg and is gone before it lands. It's the only egg on the lawn nobody wants to protect."},
 };
 
 struct AlmanacState { bool birdsPage = false; int selected = 0; int lastIndex = -1; } A;
