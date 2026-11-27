@@ -48,6 +48,7 @@ constexpr uint32_t Board_Projectiles = 0xE0;
 constexpr uint32_t Proj_Stride = 0x94;
 constexpr uint32_t Proj_Row    = 0x1C;
 constexpr uint32_t Proj_PosX   = 0x30;   // float
+constexpr uint32_t Proj_PosY   = 0x34;   // float (Cob Cannon's blast reads x at 0x30, y at 0x34)
 constexpr uint32_t Proj_Dead   = 0x50;   // bool; the game frees dead projectiles itself
 constexpr uint32_t Proj_Motion = 0x58;   // 0 straight, 1 lobbed, 2 threepeater, 3 backwards, 4 puff, 6 star, 7 homing
 constexpr uint32_t Proj_Type   = 0x5C;   // 0 pea, 1 snow pea, 4 puff, 6 fire pea, 7 star, 8 spike ...
@@ -110,6 +111,24 @@ constexpr uint32_t Plant_Board = 0x04, Plant_X = 0x08, Plant_Row = 0x1C, Plant_T
 // calls: Plant::FindTargetAndFire (0x465220) and the Threepeater's three-row check (0x4655D0).
 constexpr uintptr_t kFindTargetZombie = 0x46DA60;
 constexpr uintptr_t kFindTargetCalls[] = {0x465230, 0x4655EB, 0x46561E, 0x465659};
+
+// Plants: DataArray at Board+0xC4 named "plants", 0x400 items of 0x14C bytes (Board constructor 0x40B1D2).
+constexpr uint32_t Board_Plants = 0xC4;
+constexpr uint32_t Plant_Stride = 0x14C, Plant_State = 0x3C, Plant_Dead = 0x141, Plant_Id = 0x148;
+// Plant states read by the mod: Squash 7 = came down; Chomper 10 biting, 11 got one, 12 missed.
+// Chomper (Plant update 0x4676C0): in its ready state it asks FindTargetZombie at this call.
+constexpr uintptr_t kChomperReadyCall = 0x467718;
+// Plant::DoRowAreaDamage(plant, flags) (0x465010): fume-shroom 0x46D2BA, gloom-shroom 0x46D32A, spikeweed/spikerock 0x466775.
+constexpr uintptr_t kDoRowAreaDamage = 0x465010;
+constexpr uintptr_t kAreaDamageCalls[] = {0x466775, 0x46D2BA, 0x46D32A};
+// Board::KillAllZombiesInRadius(board, row, x, y, radius, rowRange, burn, flags) (0x421460), called by
+// Cherry Bomb 0x46CC30, Doom-shroom 0x46CCB5, Potato Mine 0x46CEDE, Cob Cannon 0x475878, explode-o-nut 0x469267.
+constexpr uintptr_t kKillAllInRadius = 0x421460;
+constexpr uintptr_t kRadiusCalls[] = {0x46CC30, 0x46CCB5, 0x46CEDE, 0x475878, 0x469267};
+// Jalapeno (Plant::DoSpecial 0x46CAF0): burns its row, (row) on the stack, at this call.
+constexpr uintptr_t kJalapenoBurn = 0x421000, kJalapenoCall = 0x46CDC0;
+// Board::CanPlantAt(board, gridX, seed), eax = gridY; returns 0 when the plant can go there.
+constexpr uintptr_t kCanPlantAt = 0x411520;
 
 template <class T> inline T rd(uintptr_t a) { return *reinterpret_cast<T*>(a); }
 template <class T> inline void wr(uintptr_t a, T v) { *reinterpret_cast<T*>(a) = v; }

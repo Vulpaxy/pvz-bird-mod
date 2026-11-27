@@ -5,3 +5,4 @@ toolchain/
 *.log
 # Packed releases go up to Melty and GitHub releases, not the repo
 release/
+scratch/

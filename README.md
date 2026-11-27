@@ -59,9 +59,10 @@ Birds with long recharges start each level half-charged, like Cherry Bomb.
 Zombies killed by a bird are removed at once and drop coins like any other kill, and a bird
 can take the last zombie of a level.
 
-**Pig structures:** Adventure levels where you have birds get 2-4 Angry Birds structures
-(glass, wood and stone blocks with pigs inside), placed at random anywhere from the fourth
-column to the zombies' end of the lawn, so every level has its own layout. The three columns
+**Pig structures:** every Adventure level (birds picked or not) gets 1 or 2 Angry Birds structures
+(glass, wood and stone blocks with pigs inside) and 1 to 3 pigs standing on their own, placed at
+random anywhere from the fourth column to the zombies' end of the lawn, so every level has its
+own layout. The three columns
 by your house always stay clear. A structure can stretch across two or three lawn squares and
 hold a pig in each of its huts. Blocks and pigs are drawn close to the birds' own size, and a
 hut is built as big as the pig inside it.
@@ -70,10 +71,17 @@ Early worlds build them mostly from glass and wood; later worlds from wood and s
   tip off the edge when what holds them up is knocked away, and fall. Landings and hard bumps
   hurt both blocks, and a pig under a heavy block pops. Bomb and Matilda's egg throw blocks
   away from the blast, and Bubbles shoves them back. Anything pushed off the lawn is gone.
-- Zombies walk through them, but a zombie behind one is covered: peas, spikes and puffs hit the
-  structure and chip at it. Lobbed shots (cabbages, kernels, melons) fly over.
-- Straight shooters (peashooters, snow peas, repeaters, threepeaters, split peas, gatling peas,
-  puff-, sea- and scaredy-shrooms) and winter-melon pults fire at a structure in their lane even
+- **No planting on them:** a lawn square that any part of a structure or pig touches can't be
+  planted on. When blocks slide or break, the squares they leave free can be planted again.
+- Zombies walk through them, but a zombie behind one is covered: every plant shot hits the
+  structure first. Peas, spikes, puffs, fire peas, Starfruit stars and Cattail spikes hit the
+  first block in their way, and lobbed shots (cabbages, kernels, butter, melons) come down on the
+  structure instead of flying over it.
+- **Every attacking plant hurts them:** fume- and gloom-shrooms gas the blocks in their reach,
+  Cherry Bomb, Doom-shroom, Potato Mine and the Cob Cannon blow them apart, a Jalapeno burns its
+  whole row, a Squash crushes the square it lands on, and a Chomper bites a block or swallows a pig
+  (all but the King Pig) in front of it. Spikeweeds and spikerocks hurt a block that slides onto them.
+- Shooters, pults, Cactus, fume- and gloom-shrooms and Chomper go for a structure in reach even
   when no zombie is there.
 - Birds smash them the Angry Birds way: Blues shatter glass, Chuck splits wood, Bomb cracks
   stone, Terence flattens anything in the square he lands on.
@@ -96,6 +104,17 @@ Early worlds build them mostly from glass and wood; later worlds from wood and s
 | King Pig     | 2400      | 200 | Only in the Dr. Zomboss fight, in a stone hall next to the robot |
 
 ## Changes
+**v2.3**
+- Every attacking plant can attack structures: catapult plants, Cactus, Starfruit, Cattail,
+  fume- and gloom-shrooms, Chomper, Squash, Cherry Bomb, Doom-shroom, Potato Mine, Jalapeno and
+  the Cob Cannon join the peashooters.
+- Structures block every shot, lobbed ones included: a pult can't reach zombies behind a
+  structure until it's cleared.
+- Squares a structure or pig touches can't be planted on.
+- Each Adventure level has 1 or 2 structures plus 1 to 3 pigs standing on their own, even
+  when you don't pick any birds. Structures now line up with the lawn's squares, and on the
+  first levels they stay on the grass.
+
 **v2.2**
 - The whole pig family: small, medium and big pigs, Helmet Pig and Mustache Pig turn up as the
   worlds go on, and the King Pig waits in a stone hall in the Dr. Zomboss fight.

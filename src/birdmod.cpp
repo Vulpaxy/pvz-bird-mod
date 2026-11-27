@@ -20,6 +20,10 @@
 #include "melty_test.h"
 
 extern "C" void birdmod_FindTargetStub();
+extern "C" void birdmod_AreaStub();
+extern "C" void birdmod_RadiusStub();
+extern "C" void birdmod_JalapenoStub();
+extern "C" void birdmod_CanPlantStub();
 
 namespace {
 
@@ -54,6 +58,7 @@ const BirdDef kBirds[kBirdCount] = {
      L"bird 02 select.wav", L"bird 02 flying.wav", L"special egg explosion.wav"},
 };
 constexpr int kImpactRadius = 60, kSplitRadius = 50, kDashSpeed = 9, kCell = 80;
+constexpr float kGridLeft = 40;   // the game's lawn squares: column c spans 40 + 80c to 120 + 80c
 constexpr int kPushDistance = 120, kTrapTicks = 500;
 
 // ---------- layout (game coordinates, 800x600) ----------
@@ -71,7 +76,7 @@ enum Material { Glass, Wood, Stone, PigBody };
 enum PigKind { PigSmall, PigMedium, PigBig, PigHelmet, PigMustache, PigKing, kPigKinds };
 struct Block { Material mat; int shape; float x, y, w, h; int hp, maxHp; float vy; int pig = PigSmall; float vx = 0; };
 struct Tower { int row; float cx; std::vector<Block> blocks; };
-struct Melon { float x; int row; bool seen; };
+struct Lob { float x; int row; bool seen; int type; bool aimed; float tx; };
 struct Debris { const Sprite* sp; float x, y, vx, vy, w, h; int t, life; };
 
 struct State {
@@ -94,7 +99,10 @@ struct State {
     bool towersMade = false;                // this level's structures were built
     int iceMax = 0;                         // highest Ice-shroom freeze timer on a zombie last frame
     bool projChecked = false, projOk = false;
-    std::map<uint32_t, Melon> melons;       // winter melons in flight, by projectile id
+    std::map<uint32_t, Lob> lobs;           // lobbed shots in flight, by projectile id
+    bool plantsChecked = false, plantsOk = false;
+    std::map<uintptr_t, int> bites;         // chompers going for a structure -> frames left
+    std::map<uint32_t, int> plantState;     // squash/chomper state last frame, by plant id
     DWORD lastHitSound = 0;
     std::vector<int> order;                 // seed bank slots in pick order: -1 plant, else bird
     std::map<int, int> plantIdx;            // chooser: plant seed type -> game bank index
@@ -360,6 +368,8 @@ float MakeStructure(Tower& t, int world, bool king, int& style, int& pigs) {
     return width * kAB;
 }
 
+// Levels 1-1 to 1-3 only have grass in the middle row(s); the rest is bare dirt.
+bool SodRow(int level, int r) { return level == 1 ? r == 2 : (level == 2 || level == 3) ? (r >= 1 && r <= 3) : true; }
 void BuildTowers() {
     S.towersMade = true;
     uintptr_t b = S.board;
@@ -375,7 +385,7 @@ void BuildTowers() {
     // Pig's hall takes the middle row.
     int lastCol = zomboss ? 6 : 9;
     std::vector<std::vector<bool>> used(RowCount(b), std::vector<bool>(11, false));
-    int count = 2 + rand() % 3;                                   // 2 to 4 structures a level
+    int count = 1 + rand() % 2;                                   // 1 or 2 structures a level
     int made = 0;
     for (int n = 0; n < count + 6 && made < count; ++n) {        // a few spare tries when the lawn is full
         bool king = zomboss && made == 0;
@@ -387,6 +397,7 @@ void BuildTowers() {
         std::vector<Spot> spots;
         for (int r = 0; r < RowCount(b); ++r) {
             if ((bg == 2 || bg == 3) && (r == 2 || r == 3)) continue;   // no pool rows
+            if (!SodRow(level, r)) continue;
             if (king && r != RowCount(b) / 2) continue;
             for (int c = 4; c + span - 1 <= lastCol; ++c) {
                 bool free = true;
@@ -398,14 +409,36 @@ void BuildTowers() {
         Spot sp = spots[rand() % spots.size()];
         for (int k = 0; k < span; ++k) used[sp.row][sp.col + k] = true;
         t.row = sp.row;
-        t.cx = kLawnLeft + kCell * (sp.col - 1) + span * kCell / 2.f;
+        t.cx = kGridLeft + kCell * (sp.col - 1) + span * kCell / 2.f;
         Log("structure: row %d columns %d-%d, style %d, %d block(s), %d pig(s)%s", t.row, sp.col, sp.col + span - 1, style,
             int(t.blocks.size()), pigs, king ? ", the King Pig" : "");
         S.towers.push_back(std::move(t));
         ++made;
     }
-    Log("level %d (world %d): %d pig structure(s)%s", level, world + 1, made, zomboss ? ", King Pig's hall" : "");
-    melty_test::Report("pig-structures", made >= 2, "only " + std::to_string(made) + " structures fit");
+    // A few pigs stand out on the lawn on their own, with no structure around them.
+    int lone = 1 + rand() % 3, loneMade = 0;
+    std::vector<std::pair<int, int>> free;
+    for (int r = 0; r < RowCount(b); ++r) {
+        if ((bg == 2 || bg == 3) && (r == 2 || r == 3)) continue;
+        if (!SodRow(level, r)) continue;
+        for (int c = 4; c <= lastCol; ++c) if (!used[r][c]) free.push_back({r, c});
+    }
+    for (int n = 0; n < lone && !free.empty(); ++n) {
+        size_t k = rand() % free.size();
+        auto [r, c] = free[k];
+        free.erase(free.begin() + k);
+        used[r][c] = true;
+        Tower t;
+        t.row = r;
+        t.cx = kGridLeft + kCell * (c - 1) + kCell / 2.f;
+        t.blocks.push_back(MakePig(PickPig(world), 0, 0));
+        Log("lone pig: %s in row %d column %d", kPigs[t.blocks[0].pig].name, r, c);
+        S.towers.push_back(std::move(t));
+        ++loneMade;
+    }
+    Log("level %d (world %d): %d pig structure(s)%s, %d pig(s) on their own", level, world + 1, made,
+        zomboss ? ", King Pig's hall" : "", loneMade);
+    melty_test::Report("pig-structures", made >= 1, "no structure fit");
 }
 
 void Shatter(const Tower& t, const Block& b) {
@@ -625,8 +658,22 @@ void TickTowerPhysics() {
     }
 }
 
-// Plant shots that fly into a structure with a zombie behind it hit the structure instead.
-// The game already hits zombies in front of it first, so a shot that gets this far is blocked.
+// ---------- plants against structures ----------
+// Every attacking plant can hit structures, and a structure stops every kind of plant shot:
+// - Straight shots (peas, spikes, puffs, fire peas), Starfruit stars and Cattail spikes hit the
+//   first block in their way (ShieldZombies).
+// - Lobbed shots (cabbages, kernels, butter, melons, winter melons) come down on the first
+//   structure between the pult and its target instead of flying over it (WatchLobbed).
+// - Fume- and gloom-shrooms and spikeweeds hurt the blocks in the area they hit (OnAreaDamage);
+//   Cherry Bomb, Doom-shroom, Potato Mine and the Cob Cannon blast them (OnRadius), a Jalapeno
+//   burns its whole row (OnJalapeno), a Squash crushes the square it lands on and a Chomper bites
+//   a block or swallows a pig in front of it (WatchPlants).
+// - Shooters, pults, fume- and gloom-shrooms, cactus and chomper go for a structure in reach even
+//   when no zombie is there (StructureTarget).
+// No plant can be put on a square that any part of a structure or pig touches (CanPlantBlocked).
+
+// Plant shots that fly into a structure hit the structure. The game already hits zombies in
+// front of it first, so a shot that gets this far is blocked.
 void ShieldZombies() {
     auto& arr = *reinterpret_cast<pvz::DataArray*>(S.board + pvz::Board_Projectiles);
     if (!S.projChecked) {
@@ -639,17 +686,20 @@ void ShieldZombies() {
         uintptr_t p = uintptr_t(arr.block) + i * pvz::Proj_Stride;
         if (!(pvz::rd<uint32_t>(p + pvz::Proj_Id) & 0xFFFF0000u) || pvz::rd<uint8_t>(p + pvz::Proj_Dead)) continue;
         int motion = pvz::rd<int>(p + pvz::Proj_Motion), type = pvz::rd<int>(p + pvz::Proj_Type);
-        if (motion != 0 && motion != 2 && motion != 4) continue;          // lobbed, backwards, homing, stars: fly past
-        int dmg = (type == 0 || type == 1 || type == 4 || type == 8) ? 20 : type == 6 ? 40 : 0;
+        if (motion == 1 || motion == 3) continue;                         // lobbed (WatchLobbed), backwards
+        int dmg = (type == 0 || type == 1 || type == 4 || type == 7 || type == 8) ? 20 : type == 6 ? 40 : 0;
         if (!dmg) continue;
-        int row = pvz::rd<int>(p + pvz::Proj_Row);
-        float px = pvz::rd<float>(p + pvz::Proj_PosX) + 28;               // front of the shot
+        bool free = motion == 6 || motion == 7;                           // stars and cattail spikes cross rows
+        float px = pvz::rd<float>(p + pvz::Proj_PosX);
+        int row = free ? RowAt(S.board, pvz::rd<float>(p + pvz::Proj_PosY) + 40) : pvz::rd<int>(p + pvz::Proj_Row);
+        float front = free ? px + 15 : px + 28;
         for (auto& t : S.towers) {
             if (t.row != row) continue;
             Block* first = nullptr;
             for (auto& b : t.blocks)
-                if (b.hp > 0 && b.y < kPeaBandLow && b.y + b.h > kPeaBandHigh && (!first || BlockLeft(t, b) < BlockLeft(t, *first))) first = &b;
-            if (!first || px < BlockLeft(t, *first) || px > BlockRight(t, *first) + 10) continue;
+                if (b.hp > 0 && b.y < kPeaBandLow && b.y + b.h > kPeaBandHigh && front >= BlockLeft(t, b) &&
+                    front <= BlockRight(t, b) + (free ? 0 : 10) && (!first || BlockLeft(t, b) < BlockLeft(t, *first))) first = &b;
+            if (!first) continue;
             if (type == 1) IceBlock(*first);                              // snow peas freeze wood into ice
             HurtBlock(*first, float(dmg));
             Nudge(*first, 0.06f);
@@ -660,21 +710,36 @@ void ShieldZombies() {
     SweepTowers("plant shot");
 }
 
-// Straight shooters (and winter-melon pults) aim only at zombies, so with no zombie in the lane they'd stand idle in
-// front of a structure. The game asks Plant::FindTargetZombie whether a plant has anything to
-// shoot at; when it says no, the mod says yes for a straight shooter with a structure block in
-// its shots' path, and the shots then hit the structure (ShieldZombies). These calls only test
-// the answer for null, so it points at a blank stand-in zombie.
-bool IsStraightShooter(int seed) {
+// Which plants go for structures, and where they reach: rows either side of their own, and the
+// stretch of lawn (x, from the plant's left edge). Pults lob, so any block of a structure counts;
+// for the rest only blocks low enough for their shots.
+struct Reach { int rows; float from, to; bool lob; };
+bool PlantReach(int seed, float x, Reach& r) {
     switch (seed) {
-    case 0:  case 5:  case 7:  case 8:  case 13:   // peashooter, snow pea, repeater, puff-shroom, scaredy-shroom
-    case 18: case 24: case 28: case 40:            // threepeater, sea-shroom, split pea, gatling pea
-    case 44:                                       // winter melon (its melon is aimed in WatchWinterMelons)
-        return true;
+    case 0: case 5: case 7: case 13: case 18:      // peashooter, snow pea, repeater, scaredy-shroom, threepeater
+    case 26: case 28: case 40:                     // cactus, split pea, gatling pea
+        r = {0, x + 40, kLawnRight + 40, false}; return true;
+    case 8: case 24:                               // puff- and sea-shrooms shoot short
+        r = {0, x + 40, x + 290, false}; return true;
+    case 32: case 34: case 39: case 44:            // cabbage-, kernel-, melon- and winter-melon pults
+        r = {0, x + 40, kLawnRight + 40, true}; return true;
+    case 10:                                       // fume-shroom: four squares ahead
+        r = {0, x + 60, x + 340, false}; return true;
+    case 42:                                       // gloom-shroom: the squares all round it
+        r = {1, x - 80, x + 160, false}; return true;
+    case 6:                                        // chomper: the square in front
+        r = {0, x + 60, x + 160, false}; return true;
     }
     return false;
 }
+bool InReach(const Tower& t, const Block& b, const Reach& r) {
+    if (b.hp <= 0 || BlockRight(t, b) <= r.from || BlockLeft(t, b) >= r.to) return false;
+    return r.lob || (b.y < kPeaBandLow && b.y + b.h > kPeaBandHigh);
+}
 
+// The game asks Plant::FindTargetZombie whether a plant has anything to attack; when it says no,
+// the mod says yes for a plant with a structure in reach, and its shots then hit the structure.
+// These calls only test the answer for null, so it points at a blank stand-in zombie.
 uint8_t g_standIn[0x200];
 
 bool ZombieInRow(int row, float fromX);
@@ -682,119 +747,263 @@ uintptr_t StructureTarget(uintptr_t plant, int row, int weapon) {
     if (weapon != 0 || !S.board || S.towers.empty() || !S.running) return 0;
     if (pvz::rd<uintptr_t>(plant + pvz::Plant_Board) != S.board) return 0;
     int seed = pvz::rd<int>(plant + pvz::Plant_Type);
-    if (!IsStraightShooter(seed)) return 0;
     float x = float(pvz::rd<int>(plant + pvz::Plant_X));
-    float reach = (seed == 8 || seed == 24) ? x + 290 : kLawnRight;   // puff- and sea-shrooms shoot short
-    if (seed == 44 && ZombieInRow(row, x)) return 0;                  // a lobbed melon would go to that zombie
+    Reach r;
+    if (!PlantReach(seed, x, r)) return 0;
+    if (r.lob && ZombieInRow(row, x)) return 0;                       // a lobbed shot would go to that zombie
     for (auto& t : S.towers) {
-        if (t.row != row) continue;
+        if (std::abs(t.row - row) > r.rows) continue;
         for (auto& b : t.blocks) {
-            if (b.hp <= 0 || b.y >= kPeaBandLow || b.y + b.h <= kPeaBandHigh) continue;   // over the shots
-            if (BlockRight(t, b) > x + 40 && BlockLeft(t, b) < reach) {
-                static uintptr_t lastPlant = 0;
-                if (plant != lastPlant) { lastPlant = plant; Log("plant (type %d) row %d x %d shoots at a structure", seed, row, int(x)); }
-                pvz::wr<int>(uintptr_t(g_standIn) + pvz::Zombie_Row, row);
-                pvz::wr<float>(uintptr_t(g_standIn) + pvz::Zombie_PosX, BlockLeft(t, b));
-                pvz::wr<int>(uintptr_t(g_standIn) + pvz::Zombie_BodyHp, 1);
-                return uintptr_t(g_standIn);
-            }
+            if (!InReach(t, b, r)) continue;
+            static uintptr_t lastPlant = 0;
+            if (plant != lastPlant) { lastPlant = plant; Log("plant (type %d) row %d x %d goes for a structure", seed, row, int(x)); }
+            if (seed == 6) S.bites[plant] = 300;                         // chomper: bite the block when its jaws close
+            pvz::wr<int>(uintptr_t(g_standIn) + pvz::Zombie_Row, row);
+            pvz::wr<float>(uintptr_t(g_standIn) + pvz::Zombie_PosX, BlockLeft(t, b));
+            pvz::wr<int>(uintptr_t(g_standIn) + pvz::Zombie_BodyHp, 1);
+            return uintptr_t(g_standIn);
         }
     }
     return 0;
 }
 
-void AimPlantsAtStructures() {
-    int done = 0;
-    for (uintptr_t site : pvz::kFindTargetCalls) {
-        auto* p = reinterpret_cast<uint8_t*>(site);
-        int32_t rel; memcpy(&rel, p + 1, 4);
-        if (p[0] != 0xE8 || site + 5 + rel != pvz::kFindTargetZombie) { Log("plant aim: unexpected code at %08x, left alone", unsigned(site)); continue; }
-        int32_t to = int32_t(uintptr_t(&birdmod_FindTargetStub) - (site + 5));
-        DWORD old;
-        if (!VirtualProtect(p + 1, 4, PAGE_EXECUTE_READWRITE, &old)) continue;
-        memcpy(p + 1, &to, 4);
-        VirtualProtect(p + 1, 4, old, &old);
-        FlushInstructionCache(GetCurrentProcess(), p, 5);
-        ++done;
-    }
-    Log("plant aim: %d of 4 shooter checks also see structures", done);
+// Wherever a call jumps into the game, it is checked to still go where it should before it is redirected.
+bool RedirectCall(uintptr_t site, uintptr_t expect, void* to) {
+    auto* p = reinterpret_cast<uint8_t*>(site);
+    int32_t rel; memcpy(&rel, p + 1, 4);
+    if (p[0] != 0xE8 || site + 5 + rel != expect) { Log("unexpected code at %08x, left alone", unsigned(site)); return false; }
+    int32_t nrel = int32_t(uintptr_t(to) - (site + 5));
+    DWORD old;
+    if (!VirtualProtect(p + 1, 4, PAGE_EXECUTE_READWRITE, &old)) return false;
+    memcpy(p + 1, &nrel, 4);
+    VirtualProtect(p + 1, 4, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), p, 5);
+    return true;
 }
 
-// Winter melons treat structures the way snow peas do. A winter-melon pult with a structure in
-// its lane and no zombie fires anyway (StructureTarget); the game lobs that melon at a default
-// spot, so the mod bends its flight to land on the structure. Wherever a winter melon comes
-// down, its icy splash turns the wood and stone near it into ice and chips at it.
-constexpr int kProjWinterMelon = 5;
-constexpr uint32_t Proj_VelX = 0x3C, Proj_VelZ = 0x44;      // lobbed: velZ starts at -7, +0.115 a tick, 120 ticks up and down
+void AimPlantsAtStructures() {
+    int done = 0, want = 0;
+    for (uintptr_t site : pvz::kFindTargetCalls) { ++want; done += RedirectCall(site, pvz::kFindTargetZombie, (void*)&birdmod_FindTargetStub); }
+    ++want; done += RedirectCall(pvz::kChomperReadyCall, pvz::kFindTargetZombie, (void*)&birdmod_FindTargetStub);
+    for (uintptr_t site : pvz::kAreaDamageCalls) { ++want; done += RedirectCall(site, pvz::kDoRowAreaDamage, (void*)&birdmod_AreaStub); }
+    for (uintptr_t site : pvz::kRadiusCalls) { ++want; done += RedirectCall(site, pvz::kKillAllInRadius, (void*)&birdmod_RadiusStub); }
+    ++want; done += RedirectCall(pvz::kJalapenoCall, pvz::kJalapenoBurn, (void*)&birdmod_JalapenoStub);
+    // Board::CanPlantAt starts "sub esp,18h; push ebx; push ebp": those 5 bytes become a jump to
+    // the mod, which runs them itself when the square is free.
+    ++want;
+    auto* f = reinterpret_cast<uint8_t*>(pvz::kCanPlantAt);
+    static const uint8_t head[5] = {0x83, 0xEC, 0x18, 0x53, 0x55};
+    DWORD old;
+    if (!memcmp(f, head, 5) && VirtualProtect(f, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        int32_t rel = int32_t(uintptr_t(&birdmod_CanPlantStub) - (pvz::kCanPlantAt + 5));
+        f[0] = 0xE9; memcpy(f + 1, &rel, 4);
+        VirtualProtect(f, 5, old, &old);
+        FlushInstructionCache(GetCurrentProcess(), f, 5);
+        ++done;
+    } else Log("planting check: unexpected code, left alone");
+    Log("plant hooks: %d of %d in place", done, want);
+    melty_test::Report("plant-hooks", done == want, std::to_string(done) + " of " + std::to_string(want) + " plant hooks in place");
+}
+
+// The blocks in a stretch of lawn (rows row-rows..row+rows, x from..to), low ones only unless any.
+template <class F> int ForBlocksIn(int row, int rows, float from, float to, float maxY, F f) {
+    int n = 0;
+    for (auto& t : S.towers) {
+        if (std::abs(t.row - row) > rows) continue;
+        for (auto& b : t.blocks)
+            if (b.hp > 0 && b.y < maxY && BlockRight(t, b) > from && BlockLeft(t, b) < to) { f(t, b); ++n; }
+    }
+    return n;
+}
+bool PlantOnBoard(uintptr_t plant) {
+    return S.board && S.running && !S.towers.empty() && pvz::rd<uintptr_t>(plant + pvz::Plant_Board) == S.board;
+}
+
+// Fume-shroom, gloom-shroom, spikeweed and spikerock (Plant::DoRowAreaDamage).
+void OnAreaDamage(uintptr_t plant) {
+    if (!PlantOnBoard(plant)) return;
+    int seed = pvz::rd<int>(plant + pvz::Plant_Type), row = pvz::rd<int>(plant + pvz::Plant_Row);
+    float x = float(pvz::rd<int>(plant + pvz::Plant_X));
+    int n = 0;
+    auto hit = [](float d) { return [d](Tower&, Block& b) { HurtBlock(b, d); Nudge(b, 0.05f); }; };
+    if (seed == 10) n = ForBlocksIn(row, 0, x + 60, x + 340, 90, hit(20));
+    else if (seed == 42) n = ForBlocksIn(row, 1, x - 80, x + 160, 90, hit(20));
+    else if (seed == 21 || seed == 46) n = ForBlocksIn(row, 0, x, x + 80, 12, hit(seed == 46 ? 40.f : 20.f));
+    if (n) SweepTowers(seed == 10 ? "fume" : seed == 42 ? "gloom" : "spikes");
+}
+
+// Cherry Bomb, Doom-shroom, Potato Mine, Cob Cannon (Board::KillAllZombiesInRadius).
+void OnRadius(int row, int x, int radius, int rowRange) {
+    if (!S.board || S.towers.empty()) return;
+    int n = 0;
+    for (auto& t : S.towers) {
+        if (std::abs(t.row - row) > rowRange) continue;
+        for (auto& b : t.blocks) {
+            float off = t.cx + b.x - x;
+            if (b.hp <= 0 || std::fabs(off) > radius + b.w / 2) continue;
+            HurtBlock(b, 1800);
+            Nudge(b, off >= 0 ? 4.f : -4.f, t.row == row ? 4.f : 0);
+            ++n;
+        }
+    }
+    if (n) { Log("explosion at row %d x %d (radius %d): %d block(s) hit", row, x, radius, n); SweepTowers("explosion"); }
+}
+
+// Jalapeno: its whole row burns.
+void OnJalapeno(int row) {
+    if (!S.board || S.towers.empty()) return;
+    int n = ForBlocksIn(row, 0, -1000, 2000, 10000, [](Tower&, Block& b) { HurtBlock(b, 1800); });
+    if (n) { Log("jalapeno burned %d block(s) in row %d", n, row); SweepTowers("jalapeno"); }
+}
+
+// Squash and Chomper: watched from the plant list. A squash crushes the square it lands on; a
+// chomper that went for a structure bites when its jaws close on no zombie (it "misses").
+void WatchPlants() {
+    auto& arr = *reinterpret_cast<pvz::DataArray*>(S.board + pvz::Board_Plants);
+    if (!S.plantsChecked) {
+        S.plantsChecked = true;
+        S.plantsOk = Readable(uintptr_t(arr.name)) && !lstrcmpA(arr.name, "plants") && arr.maxSize == 0x400;
+        Log("plants %s", S.plantsOk ? "found" : "not recognised: squash and chomper won't hit structures");
+    }
+    if (!S.plantsOk || !arr.block) return;
+    for (auto it = S.bites.begin(); it != S.bites.end();) { if (--it->second <= 0) it = S.bites.erase(it); else ++it; }
+    if (S.towers.empty()) return;
+    for (uint32_t i = 0; i < arr.maxUsed && i < arr.maxSize; ++i) {
+        uintptr_t p = uintptr_t(arr.block) + i * pvz::Plant_Stride;
+        uint32_t id = pvz::rd<uint32_t>(p + pvz::Plant_Id);
+        if (!(id & 0xFFFF0000u) || pvz::rd<uint8_t>(p + pvz::Plant_Dead)) continue;
+        int seed = pvz::rd<int>(p + pvz::Plant_Type);
+        if (seed != 17 && seed != 6) continue;
+        int state = pvz::rd<int>(p + pvz::Plant_State), row = pvz::rd<int>(p + pvz::Plant_Row);
+        float x = float(pvz::rd<int>(p + pvz::Plant_X));
+        int& last = S.plantState[id];
+        if (seed == 17 && state == 7 && last != 7) {                      // squash came down
+            int n = ForBlocksIn(row, 0, x + 5, x + 75, 10000, [](Tower&, Block& b) { HurtBlock(b, 1800); });
+            if (n) { Log("squash crushed %d block(s) in row %d", n, row); SweepTowers("squash"); }
+        }
+        if (seed == 6 && state == 12 && last != 12 && S.bites.count(p)) {   // chomper bit at a structure
+            S.bites.erase(p);
+            Tower* bt = nullptr; Block* bb = nullptr;
+            for (auto& t : S.towers) {
+                if (t.row != row) continue;
+                for (auto& b : t.blocks)
+                    if (b.hp > 0 && b.y < kPeaBandLow && BlockRight(t, b) > x + 60 && BlockLeft(t, b) < x + 160 &&
+                        (!bb || BlockLeft(t, b) < BlockLeft(*bt, *bb))) { bt = &t; bb = &b; }
+            }
+            if (bb) {
+                if (bb->mat == PigBody && bb->pig != PigKing) { bb->hp = 0; Log("chomper swallowed a %s", kPigs[bb->pig].name); }
+                else { HurtBlock(*bb, 400); Nudge(*bb, 0.5f); Log("chomper bit a block in row %d", row); }
+                SweepTowers("chomper");
+            }
+        }
+        last = state;
+    }
+}
+
+// Squares a structure or pig touches can't be planted on (Board::CanPlantAt says "not here").
+bool SquareBlocked(int gx, int gy) {
+    if (!S.board || S.towers.empty()) return false;
+    float left = kGridLeft + gx * kCell, right = left + kCell;
+    for (auto& t : S.towers) {
+        if (t.row != gy) continue;
+        for (auto& b : t.blocks)
+            if (b.hp > 0 && BlockRight(t, b) > left + 2 && BlockLeft(t, b) < right - 2) return true;
+    }
+    return false;
+}
+
+// Lobbed shots. Each new one's landing spot is worked out from its speed (it starts up at -7 and
+// gains 0.115 a tick, so about 120 ticks up and down). If a structure stands between the pult and
+// that spot, the shot is bent to come down on the structure's first block instead, and hits it
+// just before it would reach the ground. Wherever a winter melon comes down, its icy splash turns
+// the wood and stone in that square into ice and chips at it.
+constexpr int kProjWinterMelon = 5, kProjMelon = 3;
+constexpr uint32_t Proj_VelX = 0x3C, Proj_VelZ = 0x44;
 bool ZombieInRow(int row, float fromX) {
     bool any = false;
     ForEachZombie(S.board, [&](uintptr_t, int r, float cx) { if (r == row && cx > fromX) any = true; });
     return any;
 }
-const Block* FirstLowBlock(const Tower& t) {
-    const Block* first = nullptr;
-    for (auto& b : t.blocks)
-        if (b.hp > 0 && b.y < kPeaBandLow && b.y + b.h > kPeaBandHigh && (!first || BlockLeft(t, b) < BlockLeft(t, *first))) first = &b;
-    return first;
+bool IsLob(int type) { return type == 2 || type == 3 || type == 5 || type == 10 || type == 12; }
+float LobDamage(int type) { return type == 10 ? 20.f : (type == 3 || type == 5) ? 80.f : 40.f; }
+const char* LobName(int type) {
+    switch (type) { case 2: return "cabbage"; case 3: return "melon"; case 5: return "winter melon"; case 10: return "kernel"; default: return "butter"; }
 }
-// A winter melon only affects the structure in the lawn square it lands in.
-void MelonSplash(float x, int row) {
-    int col = int((x - kLawnLeft) / kCell);
-    float left = kLawnLeft + col * kCell, right = left + kCell;
-    int n = 0;
-    for (auto& t : S.towers) {
-        if (t.row != row) continue;
-        for (auto& b : t.blocks) {
-            if (b.hp <= 0 || BlockRight(t, b) <= left || BlockLeft(t, b) >= right) continue;
-            IceBlock(b);
-            HurtBlock(b, 60.f);
-            ++n;
-        }
-    }
+// A melon only affects the structure in the lawn square it lands in.
+void MelonSplash(float x, int row, bool icy, float dmg) {
+    int col = int((x - kGridLeft) / kCell);
+    float left = kGridLeft + col * kCell, right = left + kCell;
+    int n = ForBlocksIn(row, 0, left, right, 10000, [&](Tower&, Block& b) { if (icy) IceBlock(b); HurtBlock(b, dmg); Nudge(b, 0.3f); });
     if (n) {
-        S.fx.push_back({Fx::Frost, x, GroundY(row) - 30, 0, 30, int(kCell / 2)});
-        Log("winter melon splash: row %d square %d froze %d block(s)", row, col + 1, n);
+        if (icy) S.fx.push_back({Fx::Frost, x, GroundY(row) - 30, 0, 30, int(kCell / 2)});
+        Log("%s splash: row %d square %d hit %d block(s)", icy ? "winter melon" : "melon", row, col + 1, n);
     }
-    SweepTowers("winter melon");
+    SweepTowers(icy ? "winter melon" : "melon");
 }
-void WatchWinterMelons() {
+void LobHit(const Lob& m) {
+    if (m.type == kProjMelon || m.type == kProjWinterMelon) { MelonSplash(m.tx, m.row, m.type == kProjWinterMelon, LobDamage(m.type)); return; }
+    // A cabbage, kernel or butter hits the top block where it comes down.
+    Block* bb = nullptr;
+    for (auto& t : S.towers) {
+        if (t.row != m.row) continue;
+        for (auto& b : t.blocks)
+            if (b.hp > 0 && BlockRight(t, b) > m.tx - 20 && BlockLeft(t, b) < m.tx + 20 && (!bb || b.y + b.h > bb->y + bb->h)) bb = &b;
+    }
+    if (!bb) return;
+    HurtBlock(*bb, LobDamage(m.type));
+    Nudge(*bb, 0.2f);
+    SweepTowers(LobName(m.type));
+}
+void WatchLobbed() {
     auto& arr = *reinterpret_cast<pvz::DataArray*>(S.board + pvz::Board_Projectiles);
     if (!S.projOk || !arr.block) return;
-    for (auto& [id, m] : S.melons) m.seen = false;
+    for (auto& [id, m] : S.lobs) m.seen = false;
     for (uint32_t i = 0; i < arr.maxUsed && i < arr.maxSize; ++i) {
         uintptr_t p = uintptr_t(arr.block) + i * pvz::Proj_Stride;
         uint32_t id = pvz::rd<uint32_t>(p + pvz::Proj_Id);
         if (!(id & 0xFFFF0000u) || pvz::rd<uint8_t>(p + pvz::Proj_Dead)) continue;
-        if (pvz::rd<int>(p + pvz::Proj_Type) != kProjWinterMelon || pvz::rd<int>(p + pvz::Proj_Motion) != 1) continue;
+        int type = pvz::rd<int>(p + pvz::Proj_Type);
+        if (!IsLob(type) || pvz::rd<int>(p + pvz::Proj_Motion) != 1) continue;
         int row = pvz::rd<int>(p + pvz::Proj_Row);
-        float x = pvz::rd<float>(p + pvz::Proj_PosX);
-        auto it = S.melons.find(id);
-        if (it == S.melons.end()) {
-            // A new melon. With no zombie ahead in its lane it was fired at a structure: aim it there.
-            float vz = pvz::rd<float>(p + Proj_VelZ), vx = pvz::rd<float>(p + Proj_VelX);
+        float x = pvz::rd<float>(p + pvz::Proj_PosX), vz = pvz::rd<float>(p + Proj_VelZ);
+        auto it = S.lobs.find(id);
+        if (it == S.lobs.end()) {
+            Lob m{x, row, true, type, false, 0};
+            float vx = pvz::rd<float>(p + Proj_VelX);
             float left = std::clamp(120.f - (vz + 7.f) / 0.115f, 1.f, 120.f);
-            if (!S.towers.empty() && !ZombieInRow(row, x)) {
-                const Tower* best = nullptr; const Block* bb = nullptr;
-                for (auto& t : S.towers) {
-                    if (t.row != row) continue;
-                    const Block* b = FirstLowBlock(t);
-                    if (b && BlockRight(t, *b) > x && (!best || BlockLeft(t, *b) < BlockLeft(*best, *bb))) { best = &t; bb = b; }
-                }
-                if (best) {
-                    float target = best->cx + bb->x - 30;              // where the melon's picture lands centred on the block
-                    float land = x + vx * left;
-                    pvz::wr<float>(p + Proj_VelX, vx + (target - land) / left);
-                    Log("winter melon aimed at a structure: row %d, x %d -> %d", row, int(land), int(target));
+            float land = x + vx * left;                                    // where its picture's left edge comes down
+            bool noZombie = !ZombieInRow(row, x);
+            const Tower* best = nullptr; const Block* bb = nullptr;
+            for (auto& t : S.towers) {
+                if (t.row != row) continue;
+                for (auto& b : t.blocks) {
+                    if (b.hp <= 0 || BlockRight(t, b) <= x + 30) continue;
+                    if (!noZombie && BlockLeft(t, b) >= land + 30) continue;   // the structure is past its target
+                    if (!bb || BlockLeft(t, b) < BlockLeft(*best, *bb)) { best = &t; bb = &b; }
                 }
             }
-            it = S.melons.emplace(id, Melon{x, row, true}).first;
+            if (bb && !S.towers.empty()) {
+                float target = best->cx + bb->x;
+                pvz::wr<float>(p + Proj_VelX, vx + (target - 30 - land) / left);
+                m.aimed = true; m.tx = target;
+                Log("%s comes down on a structure: row %d, x %d -> %d", LobName(type), row, int(land + 30), int(target));
+            }
+            it = S.lobs.emplace(id, m).first;
         }
-        it->second.x = x; it->second.row = row; it->second.seen = true;
+        Lob& m = it->second;
+        m.x = x; m.row = row; m.seen = true;
+        if (m.aimed && vz >= 6.0f) {                                       // just above the blocks: it hits the structure
+            pvz::wr<uint8_t>(p + pvz::Proj_Dead, 1);
+            LobHit(m);
+            S.lobs.erase(it);
+        }
     }
-    for (auto it = S.melons.begin(); it != S.melons.end();) {
+    for (auto it = S.lobs.begin(); it != S.lobs.end();) {
         if (it->second.seen) { ++it; continue; }
-        MelonSplash(it->second.x + 30, it->second.row);   // it came down (on a zombie or the ground)
-        it = S.melons.erase(it);
+        const Lob& m = it->second;
+        if (m.aimed) LobHit(m);                                            // gone before we saw it land: it landed there
+        else if (m.type == kProjWinterMelon) MelonSplash(m.x + 30, m.row, true, 60.f);   // came down on a zombie or the ground
+        it = S.lobs.erase(it);
     }
 }
 
@@ -979,9 +1188,10 @@ void Update() {
     else if (++S.idleFrames > 30) S.running = false;   // paused, menu, or seed picker
     while (ticks-- > 0) Tick();
     if (S.running && S.levelChecked) {
-        if (!S.towersMade && (BirdCount() || S.conveyor)) BuildTowers();
+        if (!S.towersMade) BuildTowers();   // every Adventure level, birds or not
         ShieldZombies();
-        WatchWinterMelons();
+        WatchLobbed();
+        WatchPlants();
         WatchIceShroom();
     }
 }
@@ -2258,6 +2468,64 @@ _birdmod_FindTargetStub:
     calll _birdmod_StructureTarget
     addl $12, %esp
 1:  ret $8
+)");
+
+// The game's plant attacks and planting check (see "plants against structures"). Each stub keeps
+// every register, tells the mod, then carries on into the game's own code.
+extern "C" void __cdecl birdmod_OnAreaDamage(uint32_t* args) { OnAreaDamage(args[0]); }
+extern "C" void __cdecl birdmod_OnRadius(int32_t* args) { OnRadius(args[1], args[2], args[4], args[5]); }
+extern "C" void __cdecl birdmod_OnJalapeno(int32_t* args) { OnJalapeno(args[0]); }
+// pushal frame: [7] eax = grid row, [9] board, [10] grid column
+extern "C" int __cdecl birdmod_CanPlantBlocked(uint32_t* f) { return f[9] == S.board && SquareBlocked(int(f[10]), int(f[7])); }
+asm(R"(
+    .text
+    .globl _birdmod_AreaStub
+_birdmod_AreaStub:
+    pushal
+    leal 36(%esp), %eax
+    pushl %eax
+    calll _birdmod_OnAreaDamage
+    addl $4, %esp
+    popal
+    pushl $0x465010             # Plant::DoRowAreaDamage
+    ret
+    .globl _birdmod_RadiusStub
+_birdmod_RadiusStub:
+    pushal
+    leal 36(%esp), %eax
+    pushl %eax
+    calll _birdmod_OnRadius
+    addl $4, %esp
+    popal
+    pushl $0x421460             # Board::KillAllZombiesInRadius
+    ret
+    .globl _birdmod_JalapenoStub
+_birdmod_JalapenoStub:
+    pushal
+    leal 36(%esp), %eax
+    pushl %eax
+    calll _birdmod_OnJalapeno
+    addl $4, %esp
+    popal
+    pushl $0x421000             # the Jalapeno's row burn
+    ret
+    .globl _birdmod_CanPlantStub
+_birdmod_CanPlantStub:          # jumped to from Board::CanPlantAt's first instruction
+    pushal
+    movl %esp, %ecx
+    pushl %ecx
+    calll _birdmod_CanPlantBlocked
+    addl $4, %esp
+    testl %eax, %eax
+    popal
+    jnz 1f
+    subl $0x18, %esp            # the 5 bytes the jump replaced
+    pushl %ebx
+    pushl %ebp
+    pushl $0x411525
+    ret
+1:  movl $1, %eax               # "can't plant here"
+    ret $12
 )");
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {

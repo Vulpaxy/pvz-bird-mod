@@ -2,21 +2,53 @@
   "schemaVersion": 1,
   "mode": "standalone",
   "games": [
-    { "slug": "custom-plants-vs-zombies-game-of-the-year", "role": "primary" },
-    { "slug": "custom-angry-birds", "role": "companion" }
+    {
+      "slug": "custom-plants-vs-zombies-game-of-the-year",
+      "role": "primary"
+    },
+    {
+      "slug": "custom-angry-birds",
+      "role": "companion"
+    }
   ],
   "components": [
-    { "id": "main", "fileName": "pvz-bird-mod-*.zip", "label": "PvZ Bird Mod", "kind": "main", "required": true }
+    {
+      "id": "main",
+      "fileName": "pvz-bird-mod-*.zip",
+      "label": "PvZ Bird Mod",
+      "kind": "main",
+      "required": true
+    }
   ],
   "requirements": [],
-  "mappings": [{ "component": "main", "from": "", "to": "{managed}" }],
+  "mappings": [
+    {
+      "component": "main",
+      "from": "",
+      "to": "{managed}"
+    }
+  ],
   "launch": {
     "kind": "exe",
     "path": "{managed}/birdmod_launcher.exe",
-    "args": ["--angry-birds", "{game:custom-angry-birds}", "--pvz", "{game}"]
+    "args": [
+      "--angry-birds",
+      "{game:custom-angry-birds}",
+      "--pvz",
+      "{game}"
+    ]
   },
   "test": {
-    "checks": ["pvz-art-read", "birds-loaded", "game-hooked", "title-logo"],
-    "programs": ["popcapgame1.exe", "PlantsVsZombies.exe"]
+    "checks": [
+      "pvz-art-read",
+      "birds-loaded",
+      "game-hooked",
+      "title-logo",
+      "plant-hooks"
+    ],
+    "programs": [
+      "popcapgame1.exe",
+      "PlantsVsZombies.exe"
+    ]
   }
 }
